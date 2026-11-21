@@ -11,7 +11,7 @@ $exe = Join-Path $target "janus.exe"
 
 Write-Host "== сборка =="
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-    Write-Error "нужен Go 1.21 или новее: https://go.dev/dl/"
+    Write-Error "нужен Go 1.26 или новее: https://go.dev/dl/"
 }
 $env:CGO_ENABLED = "0"
 go build -trimpath -ldflags "-H=windowsgui -s -w" -o $exe .

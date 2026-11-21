@@ -158,11 +158,13 @@ func Add(conn *dbus.Conn, cb Callbacks) (*Item, error) {
 	it.name = name
 
 	if !Available(conn) {
-		return it, fmt.Errorf("no StatusNotifierWatcher on the bus (tray icons are switched off in the desktop)")
+		it.Close()
+		return nil, fmt.Errorf("no StatusNotifierWatcher on the bus (tray icons are switched off in the desktop)")
 	}
 	w := conn.Object(watcherDst, watcherObj)
 	if err := w.Call(watcherDst+".RegisterStatusNotifierItem", 0, name).Err; err != nil {
-		return it, fmt.Errorf("register with the tray watcher: %w", err)
+		it.Close()
+		return nil, fmt.Errorf("register with the tray watcher: %w", err)
 	}
 	return it, nil
 }
@@ -364,5 +366,3 @@ func (it *Item) AboutToShow(id int32) (bool, *dbus.Error) { return false, nil }
 func (it *Item) AboutToShowGroup(ids []int32) ([]int32, []int32, *dbus.Error) {
 	return nil, nil, nil
 }
-
-var _ = time.Second

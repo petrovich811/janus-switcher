@@ -70,6 +70,17 @@ type Engine struct {
 	run  sync.Mutex
 	evMu sync.Mutex
 	evts []Event
+
+	// restore is the deferred "put the old clipboard back" task. It lives
+	// under run so that a second conversion cannot race with it.
+	restore *restoreTask
+	closed  bool
+}
+
+type restoreTask struct {
+	timer  *time.Timer
+	before string
+	result string
 }
 
 // New creates an engine over the platform implementations.
@@ -107,6 +118,14 @@ func (e *Engine) record(ev Event) {
 func (e *Engine) Run(a config.Action) (Event, error) {
 	e.run.Lock()
 	defer e.run.Unlock()
+	if e.closed {
+		return Event{}, fmt.Errorf("engine is closed")
+	}
+
+	// If the previous conversion is still waiting to put the old clipboard
+	// back, do it now: otherwise its timer would overwrite the result of the
+	// conversion we are about to make.
+	e.flushRestoreLocked()
 
 	cfg := e.store.Get()
 	ev := Event{Time: time.Now().Format("15:04:05"), Action: string(a)}
@@ -142,9 +161,13 @@ func (e *Engine) Run(a config.Action) (Event, error) {
 	text, ok := e.grab(a, before, copyMods, copyCode)
 	e.logf("grabbed %q ok=%v", text, ok)
 	if !ok {
-		// Nothing was copied, so nothing was changed: BeginCopy on Windows does
-		// not touch the clipboard at all.
-		e.logf("nothing to convert, clipboard left as it was")
+		// On Linux BeginCopy puts a probe on the clipboard so that a copy can
+		// be detected. If nothing was copied, the probe must be replaced by the
+		// text the user had before; on Windows there is nothing to restore.
+		if r, ok := e.clip.(interface{ RestoreAfterFailedCopy(string) }); ok {
+			r.RestoreAfterFailedCopy(before)
+		}
+		e.logf("nothing to convert, clipboard restored")
 		ev.Err = "нечего конвертировать: нет выделения и не удалось выделить слово"
 		e.record(ev)
 		return ev, fmt.Errorf("%s", ev.Err)
@@ -185,14 +208,57 @@ func (e *Engine) Run(a config.Action) (Event, error) {
 			e.logf("layout switched to %s", to)
 		}
 	}
-	if cfg.RestoreClipboard && before != "" {
-		go func() {
-			time.Sleep(700 * time.Millisecond)
-			_ = e.clip.WriteText(before)
-		}()
+	if cfg.RestoreClipboard {
+		e.scheduleRestoreLocked(before, out)
 	}
 	e.record(ev)
 	return ev, nil
+}
+
+// scheduleRestoreLocked puts the old clipboard back after the paste has had
+// time to reach the application. The task stays under e.run, so a new Run
+// flushes it first instead of racing with it.
+func (e *Engine) scheduleRestoreLocked(before, result string) {
+	t := &restoreTask{before: before, result: result}
+	e.restore = t
+	t.timer = time.AfterFunc(700*time.Millisecond, func() {
+		e.run.Lock()
+		defer e.run.Unlock()
+		if e.restore != t {
+			return
+		}
+		e.restore = nil
+		// If the user copied something themselves in the meantime, leave it
+		// alone; only our own converted text may be replaced by the old one.
+		if cur, err := e.clip.ReadText(); err == nil && cur == t.result {
+			_ = e.clip.WriteText(t.before)
+		}
+	})
+}
+
+// flushRestoreLocked performs a pending restore now and cancels its timer.
+// The caller must hold e.run.
+func (e *Engine) flushRestoreLocked() {
+	t := e.restore
+	if t == nil {
+		return
+	}
+	e.restore = nil
+	t.timer.Stop()
+	if cur, err := e.clip.ReadText(); err == nil && cur == t.result {
+		_ = e.clip.WriteText(t.before)
+	}
+}
+
+// Close flushes a pending clipboard restore. It is safe to call more than once.
+func (e *Engine) Close() {
+	e.run.Lock()
+	defer e.run.Unlock()
+	if e.closed {
+		return
+	}
+	e.closed = true
+	e.flushRestoreLocked()
 }
 
 // grab puts the text we want to convert on the clipboard and returns it.

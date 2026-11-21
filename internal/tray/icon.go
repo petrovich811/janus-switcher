@@ -1,7 +1,5 @@
 package tray
 
-import "image"
-
 // Pixmap is one SNI icon representation: ARGB32 pixels, row major.
 type Pixmap struct {
 	Width  int32
@@ -196,5 +194,3 @@ func RenderIcon(size int) Pixmap {
 func Icons() []Pixmap {
 	return []Pixmap{RenderIcon(32), RenderIcon(24), RenderIcon(22), RenderIcon(16)}
 }
-
-var _ = image.Point{}

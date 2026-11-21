@@ -47,13 +47,14 @@ func (f *fakeKeyboard) Close() error { f.closeCnt++; return nil }
 func (f *fakeKeyboard) copyCount() int { return len(f.chords) }
 
 type fakeClipboard struct {
-	text    string
-	written []string
-	copied  string // what the next copy will produce
-	kb      *fakeKeyboard
-	fail    error
-	mark    int
-	begins  int
+	text     string
+	written  []string
+	copied   string // what the next copy will produce
+	kb       *fakeKeyboard
+	fail     error
+	mark     int
+	begins   int
+	restored string
 }
 
 func (c *fakeClipboard) ReadText() (string, error) {
@@ -70,6 +71,13 @@ func (c *fakeClipboard) WriteText(text string) error {
 	c.text = text
 	c.written = append(c.written, text)
 	return nil
+}
+
+// RestoreAfterFailedCopy mirrors the Linux clipboard: after a failed grab the
+// probe must be replaced by the text that was there before.
+func (c *fakeClipboard) RestoreAfterFailedCopy(original string) {
+	c.restored = original
+	c.text = original
 }
 
 // BeginCopy marks the moment the engine starts asking for a copy.
@@ -227,8 +235,23 @@ func TestRunRestoresClipboardWhenAsked(t *testing.T) {
 	if _, err := e.Run(config.ActionSelection); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// The restore happens in the background with a 700ms delay.
-	time.Sleep(900 * time.Millisecond)
+	// The restore is deferred; Close flushes it without waiting for the timer.
+	e.Close()
+	if clip.text != "старый буфер" {
+		t.Errorf("clipboard = %q, want the original text back", clip.text)
+	}
+}
+
+func TestRunRestoresProbeAfterFailedGrab(t *testing.T) {
+	e, _, clip, _, _ := newTestEngine(t, baseConfig(), "")
+	clip.text = "старый буфер"
+
+	if _, err := e.Run(config.ActionSelection); err == nil {
+		t.Fatal("expected an error when there is nothing to convert")
+	}
+	if clip.restored != "старый буфер" {
+		t.Errorf("restore hook got %q, want the original clipboard", clip.restored)
+	}
 	if clip.text != "старый буфер" {
 		t.Errorf("clipboard = %q, want the original text back", clip.text)
 	}

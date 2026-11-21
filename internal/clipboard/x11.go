@@ -53,12 +53,19 @@ type X11 struct {
 	atomText      xproto.Atom
 	atomTargets   xproto.Atom
 	atomIncr      xproto.Atom
-	atomProp      xproto.Atom
+	// atomProps are rotating reply properties. A late SelectionNotify from a
+	// timed-out request then wakes its own waiter instead of the next request.
+	atomProps   [4]xproto.Atom
+	propSeq     uint32
+	currentProp xproto.Atom
 
+	// reqMu serialises selection requests: the X11 protocol replies on one
+	// property, and concurrent reads would overwrite each other's answers.
+	reqMu       sync.Mutex
 	mu          sync.Mutex
 	owner       string
 	lastTarget  xproto.Atom
-	lastProp    xproto.Atom
+	lastProps   map[xproto.Atom]xproto.Atom
 	selWaiters  map[xproto.Atom][]*slot
 	propWaiters map[xproto.Atom][]*slot
 }
@@ -74,6 +81,7 @@ func Open() (*X11, error) {
 	c := &X11{
 		conn:        conn,
 		root:        screen.Root,
+		lastProps:   map[xproto.Atom]xproto.Atom{},
 		selWaiters:  map[xproto.Atom][]*slot{},
 		propWaiters: map[xproto.Atom][]*slot{},
 	}
@@ -90,7 +98,9 @@ func Open() (*X11, error) {
 	c.atomText = intern("TEXT")
 	c.atomTargets = intern("TARGETS")
 	c.atomIncr = intern("INCR")
-	c.atomProp = intern("JANUS_SELECTION_A")
+	for i, name := range []string{"JANUS_SELECTION_A", "JANUS_SELECTION_B", "JANUS_SELECTION_C", "JANUS_SELECTION_D"} {
+		c.atomProps[i] = intern(name)
+	}
 
 	wid, err := xproto.NewWindowId(conn)
 	if err != nil {
@@ -120,10 +130,20 @@ func (c *X11) loop() {
 		switch e := ev.(type) {
 		case xproto.SelectionNotifyEvent:
 			debugf("SelectionNotify target=%d property=%d", e.Target, e.Property)
-			c.wake(c.selWaiters, e.Property)
-			if e.Property == c.atomProp {
-				c.noteNotify(e.Target, e.Property)
+			// A success carries the property of its request. A refusal carries
+			// Property=0; attribute it to the request that is currently active.
+			c.mu.Lock()
+			c.lastTarget = e.Target
+			if e.Property != 0 {
+				c.lastProps[e.Property] = e.Property
+				c.mu.Unlock()
+				c.wake(c.selWaiters, e.Property)
+				break
 			}
+			p := c.currentProp
+			c.lastProps[p] = 0
+			c.mu.Unlock()
+			c.wake(c.selWaiters, p)
 		case xproto.PropertyNotifyEvent:
 			debugf("PropertyNotify atom=%d state=%d", e.Atom, e.State)
 			if e.State == xproto.PropertyNewValue {
@@ -138,14 +158,6 @@ func (c *X11) loop() {
 			c.mu.Unlock()
 		}
 	}
-}
-
-// noteNotify records why a selection request was refused, for diagnostics.
-func (c *X11) noteNotify(target, property xproto.Atom) {
-	c.mu.Lock()
-	c.lastTarget = target
-	c.lastProp = property
-	c.mu.Unlock()
 }
 
 func (c *X11) wake(m map[xproto.Atom][]*slot, atom xproto.Atom) {
@@ -231,6 +243,9 @@ func (c *X11) handleSelectionRequest(e xproto.SelectionRequestEvent) {
 
 // ReadSelection fetches the contents of a selection as text.
 func (c *X11) ReadSelection(selection xproto.Atom, timeout time.Duration) (string, error) {
+	c.reqMu.Lock()
+	defer c.reqMu.Unlock()
+
 	owner, err := xproto.GetSelectionOwner(c.conn, selection).Reply()
 	if err != nil {
 		return "", err
@@ -238,25 +253,36 @@ func (c *X11) ReadSelection(selection xproto.Atom, timeout time.Duration) (strin
 	if owner.Owner == 0 {
 		return "", ErrEmpty
 	}
-	s := c.add(c.selWaiters, c.atomProp)
+	// Pick a fresh reply property for this request. It is safe because reqMu
+	// keeps only one request in flight at a time.
+	replyProp := c.atomProps[c.propSeq%uint32(len(c.atomProps))]
+	c.propSeq++
+	c.mu.Lock()
+	c.currentProp = replyProp
+	delete(c.lastProps, replyProp)
+	c.mu.Unlock()
+	s := c.add(c.selWaiters, replyProp)
 	if err := xproto.ConvertSelectionChecked(c.conn, c.win, selection, c.atomUTF8,
-		c.atomProp, 0).Check(); err != nil {
-		c.drop(c.selWaiters, c.atomProp, s)
+		replyProp, 0).Check(); err != nil {
+		c.drop(c.selWaiters, replyProp, s)
 		return "", err
 	}
-	if !c.await(c.selWaiters, c.atomProp, s, timeout) {
+	if !c.await(c.selWaiters, replyProp, s, timeout) {
 		return "", ErrTimeout
 	}
-	if c.lastProp == 0 {
+	c.mu.Lock()
+	answer := c.lastProps[replyProp]
+	c.mu.Unlock()
+	if answer == 0 {
 		// The owner refused the conversion.
 		return "", ErrEmpty
 	}
-	prop, err := xproto.GetProperty(c.conn, true, c.win, c.atomProp, 0, 0, 1024*1024).Reply()
+	prop, err := xproto.GetProperty(c.conn, true, c.win, replyProp, 0, 0, 1024*1024).Reply()
 	if err != nil {
 		return "", err
 	}
 	if prop.Type == c.atomIncr {
-		return c.readIncrement()
+		return c.readIncrement(replyProp)
 	}
 	if prop.ValueLen == 0 {
 		return "", ErrEmpty
@@ -265,21 +291,21 @@ func (c *X11) ReadSelection(selection xproto.Atom, timeout time.Duration) (strin
 }
 
 // readIncrement continues an INCR transfer.
-func (c *X11) readIncrement() (string, error) {
+func (c *X11) readIncrement(prop xproto.Atom) (string, error) {
 	var out []byte
 	for i := 0; i < 100; i++ {
-		s := c.add(c.propWaiters, c.atomProp)
-		chunk, err := xproto.GetProperty(c.conn, true, c.win, c.atomProp, 0, 0, 1024*1024).Reply()
+		s := c.add(c.propWaiters, prop)
+		chunk, err := xproto.GetProperty(c.conn, true, c.win, prop, 0, 0, 1024*1024).Reply()
 		if err != nil {
-			c.drop(c.propWaiters, c.atomProp, s)
+			c.drop(c.propWaiters, prop, s)
 			return "", err
 		}
 		if chunk.ValueLen == 0 {
-			c.drop(c.propWaiters, c.atomProp, s)
+			c.drop(c.propWaiters, prop, s)
 			break
 		}
 		out = append(out, chunk.Value...)
-		if !c.await(c.propWaiters, c.atomProp, s, 2*time.Second) {
+		if !c.await(c.propWaiters, prop, s, 2*time.Second) {
 			break
 		}
 	}
@@ -299,6 +325,17 @@ func (c *X11) ReadPrimary() (string, error) {
 // probe is a marker put on the clipboard so that a copy can be detected even
 // when the application copies exactly the text that was there before.
 const probe = "janus-clipboard-probe-9d3f"
+
+// RestoreAfterFailedCopy replaces our probe with the text the user had before.
+// If the probe is already gone (a copy happened), it leaves the clipboard alone.
+func (c *X11) RestoreAfterFailedCopy(original string) {
+	if c.owned() != probe {
+		return
+	}
+	if err := c.WriteText(original); err != nil {
+		debugf("restore after failed copy: %v", err)
+	}
+}
 
 // BeginCopy puts the probe on the clipboard and returns it as the token.
 func (c *X11) BeginCopy() string {

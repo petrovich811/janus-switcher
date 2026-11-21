@@ -117,6 +117,11 @@ func Path() string { return filepath.Join(Dir(), "config.json") }
 // migrateLegacy carries the settings over from the directory used before the
 // program was renamed, so that nobody loses their hotkeys on upgrade.
 func migrateLegacy() {
+	// An explicit config directory (tests, experiments) must not be populated
+	// from the user's real settings behind their back.
+	if os.Getenv("JANUS_CONFIG_DIR") != "" {
+		return
+	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return
@@ -200,24 +205,54 @@ func (s *Store) Get() Config {
 // Update applies fn to the configuration and saves it.
 func (s *Store) Update(fn func(*Config)) (Config, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.cfg
 	fn(&s.cfg)
 	s.normalize()
 	cfg := s.cfg
-	s.mu.Unlock()
-	return cfg, s.save()
+	if err := s.saveLocked(); err != nil {
+		// Keep memory and disk in agreement: a request that could not be
+		// persisted reports an error and does not change the running config.
+		s.cfg = old
+		return old, err
+	}
+	return cfg, nil
 }
 
 func (s *Store) save() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.saveLocked()
+}
+
+// saveLocked writes the configuration atomically. The caller holds s.mu (read
+// or write) so that two requests cannot interleave their JSON files.
+func (s *Store) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
-	s.mu.RLock()
 	data, err := json.MarshalIndent(s.cfg, "", "  ")
-	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, append(data, '\n'), 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, s.path)
 }
 
 // FilePath is the location of the configuration file.

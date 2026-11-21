@@ -75,10 +75,11 @@ func (s *Server) Listen() (string, error) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if err != nil {
+		listenErr := err
 		if ln, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(os.Stderr, "настройки на %s: %v\n", ln.Addr(), err)
+		fmt.Fprintf(os.Stderr, "настройки на %s: %v\n", ln.Addr(), listenErr)
 	}
 	srv := &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
@@ -285,5 +286,3 @@ func (s *Server) quit(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 }
-
-var _ = fmt.Sprintf

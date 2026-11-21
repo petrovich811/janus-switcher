@@ -10,7 +10,7 @@ BIN="${BIN_DIR}/janus"
 echo "== сборка =="
 cd "${SRC_DIR}"
 if ! command -v go >/dev/null 2>&1; then
-  echo "нужен Go 1.21 или новее: https://go.dev/dl/" >&2
+  echo "нужен Go 1.26 или новее: https://go.dev/dl/" >&2
   exit 1
 fi
 mkdir -p "${BIN_DIR}"

@@ -47,6 +47,7 @@ const (
 	smCxSmIcon     = 49
 
 	nimAdd     = 0
+	nimModify  = 1
 	nimDelete  = 2
 	nifMessage = 0x00000001
 	nifIcon    = 0x00000002
@@ -468,7 +469,10 @@ func (h *Host) updateTray() {
 	nid.uFlags = nifTip | nifIcon
 	nid.hIcon = h.icon
 	copyTip(&nid.szTip, h.tip())
-	procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
+	if r, _, _ := procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid))); r == 0 {
+		// Some shells want a fresh NIM_ADD after Explorer restarted.
+		procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
+	}
 }
 
 func (h *Host) tip() string {

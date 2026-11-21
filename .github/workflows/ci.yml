@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goarch: amd64
+          - os: windows-latest
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Build
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...
+      - name: Vet
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: go vet ./...
+      - name: Test
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: go test -count=1 ./...
+      - name: Race (Linux)
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
+
+  cross-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Cross-build Windows amd64
+        run: GOOS=windows GOARCH=amd64 go build -o /tmp/janus.exe .
+      - name: Vet Windows code
+        run: GOOS=windows GOARCH=amd64 go vet ./...

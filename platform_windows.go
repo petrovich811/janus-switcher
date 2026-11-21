@@ -85,12 +85,29 @@ func (p *windowsPlatform) bindings(a *app) ([]winhost.Binding, error) {
 	return []winhost.Binding{mainB, altB}, nil
 }
 
+// Preflight claims the single-instance mutex before HTTP and IPC are started.
+// Without it a second copy would overwrite the running daemon's ipc.port file
+// and then exit, leaving the first daemon unreachable.
+func (p *windowsPlatform) Preflight() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rel != nil {
+		return nil
+	}
+	rel, err := winhost.CheckSingleInstance()
+	if err != nil {
+		return err
+	}
+	p.rel = rel
+	return nil
+}
+
 // Start brings up the hidden window with hotkeys and the tray icon.
 func (p *windowsPlatform) Start(a *app) error {
-	if rel, err := winhost.CheckSingleInstance(); err != nil {
-		return err
-	} else {
-		p.rel = rel
+	if p.rel == nil {
+		if err := p.Preflight(); err != nil {
+			return err
+		}
 	}
 	bindings, err := p.bindings(a)
 	if err != nil {
@@ -252,15 +269,24 @@ func (p *windowsPlatform) Diag() []string {
 		out = append(out, "демон:              не запущен, сочетания не проверены")
 	}
 
-	probe := fmt.Sprintf("janus-diag-%d", time.Now().UnixNano()%100000)
-	if err := p.clip.WriteText(probe); err != nil {
-		out = append(out, "буфер записи:       "+err.Error())
-	} else if got, err := p.clip.ReadText(); err != nil {
-		out = append(out, "буфер чтения:       "+err.Error())
-	} else if got != probe {
-		out = append(out, fmt.Sprintf("буфер:              вернулось %q вместо %q", got, probe))
+	// Round-trip test only when there is text to save: the probe must never
+	// replace a non-text clipboard that we cannot put back.
+	if before, err := p.clip.ReadText(); err != nil {
+		out = append(out, "буфер:              нет текста, запись не проверялась")
 	} else {
-		out = append(out, "буфер:              запись и чтение работают")
+		probe := fmt.Sprintf("janus-diag-%d", time.Now().UnixNano()%100000)
+		if err := p.clip.WriteText(probe); err != nil {
+			out = append(out, "буфер записи:       "+err.Error())
+		} else if got, err := p.clip.ReadText(); err != nil {
+			out = append(out, "буфер чтения:       "+err.Error())
+		} else if got != probe {
+			out = append(out, fmt.Sprintf("буфер:              вернулось %q вместо %q", got, probe))
+		} else {
+			out = append(out, "буфер:              запись и чтение работают")
+		}
+		if err := p.clip.WriteText(before); err != nil {
+			out = append(out, "буфер:              не удалось вернуть прежний текст: "+err.Error())
+		}
 	}
 
 	if p.lays.Available() == nil {

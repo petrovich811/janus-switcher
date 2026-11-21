@@ -221,13 +221,27 @@ func (k *Keyboard) Chord(mods []uint16, key uint16) error {
 // Control characters are sent as keys: applications do not turn a Unicode
 // newline into an Enter press.
 func (k *Keyboard) TypeText(text string, layout convert.LayoutID) error {
+	prevCR := false
 	for _, r := range text {
-		switch r {
-		case '\n', '\r':
+		if r == '\r' {
+			if err := k.Tap(KeyEnter); err != nil {
+				return err
+			}
+			prevCR = true
+			continue
+		}
+		if r == '\n' {
+			if prevCR {
+				prevCR = false
+				continue
+			}
 			if err := k.Tap(KeyEnter); err != nil {
 				return err
 			}
 			continue
+		}
+		prevCR = false
+		switch r {
 		case '\t':
 			if err := k.Tap(KeyTab); err != nil {
 				return err

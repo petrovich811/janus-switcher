@@ -182,7 +182,7 @@
     <div class="badges" id="badges"></div>
     <div class="inline" style="margin-top:14px" id="trayActions" hidden>
       <button class="ghost" id="enableTray">Включить значок в трее</button>
-      <span class="hint">В GNOME значки показов выключает расширение AppIndicator.</span>
+      <span class="hint">В GNOME показ значков включает расширение AppIndicator.</span>
     </div>
   </section>
 
@@ -285,7 +285,6 @@ async function onCaptureKey(e){
   const res = await post('/api/hotkey', {slot: capturing.slot, combo});
   stopCapture();
   if (!res.ok) { toast(res.error || 'не удалось назначить', true); return; }
-  state.config.hotkey_main = capturing && capturing.slot === 'alt' ? state.config.hotkey_main : state.config.hotkey_main;
   await refresh();
   toast('Готово: ' + (res.combo || combo));
 }

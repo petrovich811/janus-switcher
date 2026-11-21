@@ -6,6 +6,7 @@ package clipboard
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -43,6 +44,9 @@ var (
 	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
 	procRegisterClassExW = user32.NewProc("RegisterClassExW")
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
+	procGetMessageW      = user32.NewProc("GetMessageW")
+	procTranslateMessage = user32.NewProc("TranslateMessage")
+	procDispatchMessageW = user32.NewProc("DispatchMessageW")
 
 	clipboardWndProc = syscall.NewCallback(func(hwnd, msg, wparam, lparam uintptr) uintptr {
 		r, _, _ := procDefWindowProcW.Call(hwnd, msg, wparam, lparam)
@@ -52,11 +56,39 @@ var (
 
 // Win is the Windows clipboard.
 type Win struct {
-	mu     sync.Mutex
-	last   string
-	owner  uintptr // hidden message-only window used as the clipboard owner
-	ownsMu sync.Mutex
+	mu       sync.Mutex
+	last     string
+	owner    uintptr // hidden message-only window used as the clipboard owner
+	ownerErr error
+
+	ownerOnce  sync.Once
+	ownerReady chan struct{}
 }
+
+// msgStruct mirrors MSG. The window thread needs a message loop so that the
+// owner window lives as long as the process, not as long as some recycled Go
+// thread.
+type msgStruct struct {
+	hwnd    uintptr
+	message uint32
+	wParam  uintptr
+	lParam  uintptr
+	time    uint32
+	pt      struct{ x, y int32 }
+	private uint32
+}
+
+// ptr reinterprets an address returned by GlobalLock. The block lives outside
+// the Go heap and stays valid until GlobalUnlock, so the conversion is safe;
+// go vet cannot see that and reports the direct uintptr -> unsafe.Pointer form.
+func ptr(p uintptr) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&p))
+}
+
+var (
+	classOnce sync.Once
+	classErr  error
+)
 
 // Open creates the clipboard handle.
 func Open() (*Win, error) { return &Win{}, nil }
@@ -64,17 +96,30 @@ func Open() (*Win, error) { return &Win{}, nil }
 // ownerWindow returns a hidden message-only window. OpenClipboard needs a real
 // window handle: with NULL, EmptyClipboard clears the owner and the following
 // SetClipboardData fails, which would break every conversion.
-func (w *Win) ownerWindow() uintptr {
-	w.ownsMu.Lock()
-	defer w.ownsMu.Unlock()
-	if w.owner != 0 {
-		return w.owner
-	}
+//
+// The window is created on a dedicated locked thread with a message loop: a
+// window belongs to its thread, and a thread that exits would take it away and
+// break the clipboard for the rest of the process.
+func (w *Win) ownerWindow() (uintptr, error) {
+	w.ownerOnce.Do(func() {
+		w.ownerReady = make(chan struct{})
+		go w.ownerLoop()
+	})
+	<-w.ownerReady
+	return w.owner, w.ownerErr
+}
+
+func (w *Win) ownerLoop() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	const hwndMessage = ^uintptr(0) - 2 // (HWND)-3, HWND_MESSAGE
 	className := "JanusClipboardOwner"
 	name, err := windows.UTF16PtrFromString(className)
 	if err != nil {
-		return 0
+		w.ownerErr = err
+		close(w.ownerReady)
+		return
 	}
 	inst, _, _ := procGetModuleHandleW.Call(0)
 
@@ -92,18 +137,45 @@ func (w *Win) ownerWindow() uintptr {
 		lpszClassName *uint16
 		hIconSm       uintptr
 	}
-	wc := wndClassEx{lpfnWndProc: clipboardWndProc, hInstance: inst, lpszClassName: name}
-	wc.cbSize = uint32(unsafe.Sizeof(wc))
-	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))) // may already exist
+	classOnce.Do(func() {
+		wc := wndClassEx{lpfnWndProc: clipboardWndProc, hInstance: inst, lpszClassName: name}
+		wc.cbSize = uint32(unsafe.Sizeof(wc))
+		if r, _, callErr := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
+			classErr = fmt.Errorf("RegisterClassEx(%s): %v", className, callErr)
+		}
+	})
+	if classErr != nil {
+		w.ownerErr = classErr
+		close(w.ownerReady)
+		return
+	}
 
-	hwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(name)), 0, 0,
+	hwnd, _, callErr := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(name)), 0, 0,
 		0, 0, 0, 0, hwndMessage, 0, inst, 0)
+	if hwnd == 0 {
+		w.ownerErr = fmt.Errorf("CreateWindowEx(%s): %v", className, callErr)
+		close(w.ownerReady)
+		return
+	}
 	w.owner = hwnd
-	return hwnd
+	close(w.ownerReady)
+
+	var m msgStruct
+	for {
+		r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+		if int32(r) <= 0 {
+			return
+		}
+		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+	}
 }
 
 func (w *Win) open() error {
-	hwnd := w.ownerWindow()
+	hwnd, err := w.ownerWindow()
+	if err != nil {
+		return err
+	}
 	for i := 0; i < openRetries; i++ {
 		if r, _, _ := procOpenClipboard.Call(hwnd); r != 0 {
 			return nil
@@ -123,6 +195,10 @@ func (w *Win) Sequence() uint32 {
 
 // ReadText returns the clipboard text.
 func (w *Win) ReadText() (string, error) {
+	// OpenClipboard/CloseClipboard belong to one OS thread; without the lock
+	// the goroutine could close another thread's clipboard.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.open(); err != nil {
@@ -144,8 +220,8 @@ func (w *Win) ReadText() (string, error) {
 		return "", fmt.Errorf("в буфере пустая строка")
 	}
 	// GlobalLock returns a uintptr; the block stays locked until GlobalUnlock,
-	// so the conversion is safe. go vet still reports it as unsafeptr.
-	units := unsafe.Slice((*uint16)(unsafe.Pointer(p)), size/2)
+	// so the conversion is safe.
+	units := unsafe.Slice((*uint16)(ptr(p)), size/2)
 	s := windows.UTF16ToString(units)
 	w.last = s
 	return s, nil
@@ -154,14 +230,14 @@ func (w *Win) ReadText() (string, error) {
 // WriteText replaces the clipboard text. The data is handed to the system, so
 // the memory must not be freed after a successful SetClipboardData.
 func (w *Win) WriteText(text string) error {
+	// See ReadText: the clipboard calls must stay on one OS thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := w.open(); err != nil {
-		return err
-	}
-	defer w.close()
 
-	procEmptyClipboard.Call()
+	// Allocate and fill the block before emptying the clipboard, so a failed
+	// allocation cannot leave the user with an empty clipboard.
 	units := utf16.Encode([]rune(text))
 	size := (len(units) + 1) * 2
 	h, _, _ := procGlobalAlloc.Call(gmemMoveable, uintptr(size))
@@ -175,15 +251,23 @@ func (w *Win) WriteText(text string) error {
 	}
 	// One slice covers the text and its terminator: GlobalAlloc does not
 	// guarantee zeroed memory.
-	// Same as above: the pointer is valid until GlobalUnlock.
-	dst := unsafe.Slice((*uint16)(unsafe.Pointer(p)), len(units)+1)
+	dst := unsafe.Slice((*uint16)(ptr(p)), len(units)+1)
 	copy(dst, units)
 	dst[len(units)] = 0
 	procGlobalUnlock.Call(h)
 
-	if r, _, err := procSetClipboardData.Call(cfUnicodeText, h); r == 0 {
+	if err := w.open(); err != nil {
 		procGlobalFree.Call(h)
-		return fmt.Errorf("не удалось записать буфер: %v", err)
+		return err
+	}
+	defer w.close()
+	if r, _, callErr := procEmptyClipboard.Call(); r == 0 {
+		procGlobalFree.Call(h)
+		return fmt.Errorf("не удалось очистить буфер: %v", callErr)
+	}
+	if r, _, callErr := procSetClipboardData.Call(cfUnicodeText, h); r == 0 {
+		procGlobalFree.Call(h)
+		return fmt.Errorf("не удалось записать буфер: %v", callErr)
 	}
 	w.last = text
 	return nil

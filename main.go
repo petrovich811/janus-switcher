@@ -21,7 +21,7 @@ import (
 )
 
 // Version is the program version.
-const Version = "1.1.0"
+const Version = "1.1.1"
 
 // platform is the per-OS half of the daemon.
 type platform interface {
@@ -227,15 +227,27 @@ func runDaemon() {
 	a := newApp()
 	cfg := a.store.Get()
 
+	// Windows claims its single-instance mutex before the IPC port file is
+	// touched, so a second copy cannot break the running daemon.
+	if pf, ok := a.plat.(interface{ Preflight() error }); ok {
+		if err := pf.Preflight(); err != nil {
+			fmt.Fprintln(os.Stderr, "запуск:", err)
+			logf("preflight: %v", err)
+			return
+		}
+	}
+
 	ln, err := ipc.Listen()
 	if err != nil {
+		// Without IPC the hotkey command cannot reach the daemon; refuse to
+		// start a half-working second copy.
 		fmt.Fprintln(os.Stderr, "ipc:", err)
 		logf("ipc listen: %v", err)
-	} else {
-		stop := ipc.Serve(ln, a.handleIPC)
-		defer stop()
-		logf("ipc listening on %s", ipc.Addr())
+		return
 	}
+	stop := ipc.Serve(ln, a.handleIPC)
+	defer stop()
+	logf("ipc listening on %s", ipc.Addr())
 
 	srv := server.New(a.store, a.eng, server.Hooks{
 		ApplyHotkeys: func() error {
@@ -265,8 +277,11 @@ func runDaemon() {
 	}
 
 	if err := a.plat.Start(a); err != nil {
+		// A second copy on Windows, or a broken hidden window, must not leave
+		// a zombie daemon: HTTP and IPC are already up, so stop the process.
 		fmt.Fprintln(os.Stderr, "запуск:", err)
 		logf("start: %v", err)
+		return
 	}
 
 	fmt.Printf("janus %s запущен\n  настройки: %s\n  конфиг:    %s\n  журнал:    %s\n",
@@ -283,6 +298,11 @@ func runDaemon() {
 	case <-sig:
 	case <-a.quit:
 	}
+	// Stop accepting hotkey commands first, then flush the clipboard and tear
+	// the platform down. A command that arrived just before the listener closed
+	// may still be running; Engine.Close waits for it under e.run.
+	stop()
+	a.eng.Close()
 	a.plat.Stop()
 	logf("daemon stopped")
 }
@@ -391,8 +411,9 @@ func runStatus() {
 	} else {
 		fmt.Println("демон:    не запущен")
 	}
-	for _, k := range sortedKeys(a.status()) {
-		fmt.Printf("%-20s %v\n", k+":", a.status()[k])
+	st := a.status()
+	for _, k := range sortedKeys(st) {
+		fmt.Printf("%-20s %v\n", k+":", st[k])
 	}
 }
 
@@ -417,7 +438,7 @@ func runDiag() {
 		fmt.Println(line)
 	}
 	fmt.Println("--- проверка переворота ---")
-	for _, in := range []string{"ghbdtn vjq lhue", "руддщ", "Ghbdtn!"} {
+	for _, in := range []string{"ghbdtn vjq lheu", "руддщ", "Ghbdtn!"} {
 		out, dir := engine.Preview(in)
 		fmt.Printf("%-18q -> %-18q [%s]\n", in, out, dir)
 	}

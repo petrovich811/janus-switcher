@@ -3,9 +3,11 @@
 package ipc
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // SocketPath is where the daemon listens.
@@ -25,6 +27,12 @@ func Listen() (net.Listener, error) {
 	path := SocketPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
+	}
+	// Only remove a stale socket: a live daemon must keep its socket, otherwise
+	// a second `janus daemon` would steal the hotkey commands.
+	if conn, err := net.DialTimeout("unix", path, 300*time.Millisecond); err == nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("демон уже запущен (сокет %s отвечает)", path)
 	}
 	_ = os.Remove(path)
 	ln, err := net.Listen("unix", path)

@@ -453,5 +453,3 @@ func newAppStore() *config.Store {
 	}
 	return store
 }
-
-var _ = strings.TrimSpace
