@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Janus — настройки</title>
+<style>
+  :root{
+    --bg:#f6f6f8; --card:#ffffff; --text:#1d1d20; --muted:#6b6b75;
+    --border:#e2e2e8; --accent:#3584e4; --accent-soft:#e8f0fc;
+    --ok:#2ec27e; --warn:#e5a50a; --bad:#e01b24; --radius:14px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#18181b; --card:#232327; --text:#ececf1; --muted:#9a9aa6;
+           --border:#33333a; --accent-soft:#1e2c44; --accent:#62a0ea; }
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none !important}
+  body{margin:0;padding:28px 18px 60px;background:var(--bg);color:var(--text);
+       font:15px/1.5 system-ui,-apple-system,"Segoe UI",Ubuntu,Cantarell,sans-serif;}
+  .wrap{max-width:820px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:22px;margin:0;letter-spacing:-.2px}
+  .sub{color:var(--muted);font-size:13px}
+  .spacer{flex:1}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+        padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;
+           color:var(--muted);margin:0 0 14px;font-weight:600}
+  .row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border)}
+  .row:first-of-type{border-top:none;padding-top:0}
+  .row .name{flex:1;min-width:150px}
+  .row .name b{display:block;font-weight:600}
+  .row .name small{color:var(--muted)}
+  .key{font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--accent-soft);
+       color:var(--accent);border:1px solid transparent;border-radius:9px;padding:10px 14px;
+       cursor:pointer;min-width:190px;text-align:center;transition:.15s}
+  .key:hover{border-color:var(--accent)}
+  .key.capturing{background:var(--accent);color:#fff;animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.72}}
+  select,input[type=text],input[type=number]{font:inherit;color:inherit;background:var(--card);
+       border:1px solid var(--border);border-radius:9px;padding:8px 10px;min-width:140px}
+  select:focus,input:focus,textarea:focus,.key:focus{outline:2px solid var(--accent);outline-offset:1px}
+  textarea{width:100%;min-height:76px;font:inherit;color:inherit;background:var(--bg);
+       border:1px solid var(--border);border-radius:10px;padding:10px 12px;resize:vertical}
+  .switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+  .switch input{display:none}
+  .track{width:46px;height:26px;border-radius:99px;background:var(--border);position:relative;transition:.18s}
+  .track::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;
+                background:#fff;transition:.18s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+  .switch input:checked + .track{background:var(--ok)}
+  .switch input:checked + .track::after{transform:translateX(20px)}
+  button{font:inherit;color:#fff;background:var(--accent);border:0;border-radius:9px;
+         padding:9px 16px;cursor:pointer}
+  button:hover{filter:brightness(1.06)}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--border)}
+  button.ghost:hover{background:var(--accent-soft)}
+  .badges{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .badge{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);
+         border-radius:11px;padding:10px 12px;font-size:13px}
+  .dot{width:9px;height:9px;border-radius:50%;margin-top:5px;flex:0 0 auto;background:var(--muted)}
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+  .badge small{color:var(--muted);display:block;line-height:1.35;word-break:break-word}
+  .log{display:flex;flex-direction:column;gap:6px;font-size:13px;max-height:230px;overflow:auto}
+  .log div{display:flex;gap:10px;align-items:baseline}
+  .log time{color:var(--muted);font-variant-numeric:tabular-nums}
+  .log .from{color:var(--muted);text-decoration:line-through}
+  .log .err{color:var(--bad)}
+  .preview{display:grid;gap:10px;grid-template-columns:1fr auto 1fr;align-items:center}
+  .preview .out{padding:10px 12px;border:1px dashed var(--border);border-radius:10px;min-height:42px;
+       word-break:break-word;background:var(--bg)}
+  .dir{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+         background:#2b2b31;color:#fff;padding:11px 18px;border-radius:11px;opacity:0;
+         transition:.22s;pointer-events:none;font-size:14px;max-width:90vw}
+  .toast.show{opacity:1;transform:translateX(-50%)}
+  footer{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:12px;flex-wrap:wrap}
+  code{font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--muted)}
+  .hint{color:var(--muted);font-size:13px;margin-top:10px}
+  .inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Janus</h1>
+      <div class="sub">Двуликий: переворот текста между русской и английской раскладкой</div>
+    </div>
+    <div class="spacer"></div>
+    <label class="switch" title="Включить или выключить перехват клавиши">
+      <input type="checkbox" id="enabled">
+      <span class="track"></span>
+      <span id="enabledLabel">Включён</span>
+    </label>
+  </header>
+
+  <section class="card">
+    <h2>Клавиши</h2>
+    <div class="row">
+      <div class="name"><b>Основная клавиша</b>
+        <small>нажмите на поле, чтобы назначить сочетание</small></div>
+      <div class="key" id="keyMain" tabindex="0" role="button">Ctrl+Shift+Pause</div>
+      <select id="actionMain">
+        <option value="selection">выделенный текст</option>
+        <option value="word">последнее слово</option>
+        <option value="line">строка</option>
+      </select>
+    </div>
+    <div class="row">
+      <div class="name"><b>С Shift</b>
+        <small>второе сочетание, например Shift+Break — своё действие</small></div>
+      <div class="key" id="keyAlt" tabindex="0" role="button">Shift+Pause</div>
+      <select id="actionAlt">
+        <option value="selection">выделенный текст</option>
+        <option value="word">последнее слово</option>
+        <option value="line">строка</option>
+      </select>
+    </div>
+    <div class="row">
+      <div class="name"><b>Кто держит клавиши</b>
+        <small>GNOME — демон сам прописывает сочетания; вручную — назначьте <code>janus action main</code> в настройках рабочего стола</small></div>
+      <select id="hotkeySource">
+        <option value="gnome">GNOME (автоматически)</option>
+        <option value="off">вручную</option>
+      </select>
+    </div>
+    <div class="hint">Esc — отменить назначение. GNOME принимает только сочетания с модификатором (Ctrl, Alt, Shift или Super):
+      одна клавиша Pause без модификатора не сработает. Комбинации вида Ctrl+Shift+F9 часто заняты браузером — если клавиша молчит, назначьте другую.
+      Совсем молчит? Запустите <code>janus diag</code>: он покажет, зарегистрировано ли сочетание и держит ли его демон клавиш сессии.</div>
+  </section>
+
+  <section class="card">
+    <h2>Поведение</h2>
+    <div class="row">
+      <div class="name"><b>Переключать раскладку</b><small>после переворота включать ту раскладку, которой написан результат</small></div>
+      <label class="switch"><input type="checkbox" id="switchLayout"><span class="track"></span></label>
+    </div>
+    <div class="row">
+      <div class="name"><b>Возвращать буфер обмена</b><small>после вставки класть обратно прежний текст</small></div>
+      <label class="switch"><input type="checkbox" id="restoreClipboard"><span class="track"></span></label>
+    </div>
+    <div class="row">
+      <div class="name"><b>Задержка вставки</b><small>пауза после записи в буфер, мс</small></div>
+      <input type="number" id="pasteDelay" min="40" max="1000" step="10" style="width:110px">
+    </div>
+    <div class="row">
+      <div class="name"><b>Копировать</b><small>чем просить текст у программы</small></div>
+      <select id="copyShortcut">
+        <option value="ctrl+c">Ctrl+C</option>
+        <option value="ctrl+insert">Ctrl+Insert</option>
+        <option value="ctrl+shift+c">Ctrl+Shift+C</option>
+      </select>
+    </div>
+    <div class="row">
+      <div class="name"><b>Вставлять</b><small>чем возвращать результат</small></div>
+      <select id="pasteShortcut">
+        <option value="ctrl+v">Ctrl+V</option>
+        <option value="shift+insert">Shift+Insert</option>
+        <option value="ctrl+shift+v">Ctrl+Shift+V</option>
+      </select>
+    </div>
+    <div class="inline" style="margin-top:14px">
+      <button id="save">Сохранить</button>
+      <button class="ghost" id="tryNow">Попробовать сейчас</button>
+      <span class="hint" id="savedHint"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Проверка</h2>
+    <textarea id="testIn" placeholder="Наберите здесь ghbdtn или привет"></textarea>
+    <div class="preview" style="margin-top:12px">
+      <div class="out"><span class="dir">было</span><span id="testWas">—</span></div>
+      <div>→</div>
+      <div class="out"><span class="dir">станет</span><span id="testOut">—</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Состояние</h2>
+    <div class="badges" id="badges"></div>
+    <div class="inline" style="margin-top:14px" id="trayActions" hidden>
+      <button class="ghost" id="enableTray">Включить значок в трее</button>
+      <span class="hint">В GNOME значки показов выключает расширение AppIndicator.</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Журнал</h2>
+    <div class="log" id="log"><div class="hint">пока пусто</div></div>
+  </section>
+
+  <footer>
+    <span id="version"></span>
+    <span>конфиг: <code id="cfgPath"></code></span>
+    <div class="spacer"></div>
+    <button class="ghost" id="quit">Остановить</button>
+  </footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null;
+let capturing = null;
+
+function toast(msg, bad){
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.background = bad ? '#7a1d22' : '#2b2b31';
+  t.classList.add('show');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+async function post(path, body){
+  const r = await fetch(path, {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-Janus':'1'},
+    body: JSON.stringify(body || {})
+  });
+  return r.json();
+}
+
+function humanize(accel){
+  if (!accel) return '—';
+  let s = accel;
+  const mods = [];
+  for (const [tag, name] of [['<Control>','Ctrl'],['<Alt>','Alt'],['<Shift>','Shift'],['<Super>','Super']]){
+    if (s.includes(tag)) { mods.push(name); s = s.replace(tag, ''); }
+  }
+  const key = s.replace('Page_Up','PageUp').replace('Page_Down','PageDown')
+               .replace('BackSpace','Backspace').replace('Print','PrintScreen')
+               .replace('space','Space').replace('Return','Enter');
+  return [...mods, key].join('+');
+}
+
+function keyName(e){
+  const c = e.code;
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(c)) return c.slice(5);
+  if (/^Numpad[0-9]$/.test(c)) return 'numpad' + c.slice(6);
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(c)) return c.toLowerCase();
+  const map = {Pause:'pause', PrintScreen:'print', Insert:'insert', Delete:'delete',
+    Home:'home', End:'end', PageUp:'pageup', PageDown:'pagedown', Space:'space',
+    Enter:'return', NumpadEnter:'return', Tab:'tab', Backspace:'backspace',
+    Escape:'escape', ArrowLeft:'left', ArrowRight:'right', ArrowUp:'up', ArrowDown:'down'};
+  return map[c] || null;
+}
+
+function startCapture(slot, el){
+  if (capturing) stopCapture();
+  capturing = {slot, el};
+  el.classList.add('capturing');
+  el.textContent = 'Нажмите сочетание…';
+  window.addEventListener('keydown', onCaptureKey, true);
+}
+
+function stopCapture(){
+  if (!capturing) return;
+  const el = capturing.el;
+  window.removeEventListener('keydown', onCaptureKey, true);
+  capturing = null;
+  el.classList.remove('capturing');
+  renderKeys();
+}
+
+async function onCaptureKey(e){
+  e.preventDefault(); e.stopPropagation();
+  if (e.key === 'Escape') { stopCapture(); return; }
+  const onlyMod = ['Control','Shift','Alt','Meta','AltGraph'].includes(e.key);
+  const mods = [];
+  if (e.ctrlKey) mods.push('ctrl');
+  if (e.shiftKey) mods.push('shift');
+  if (e.altKey) mods.push('alt');
+  if (e.metaKey) mods.push('super');
+  if (onlyMod) {
+    capturing.el.textContent = mods.length ? mods.map(m => m[0].toUpperCase()+m.slice(1)).join('+') + '+' : 'Нажмите…';
+    return;
+  }
+  const k = keyName(e);
+  if (!k) return;
+  const combo = [...mods, k].join('+');
+  const res = await post('/api/hotkey', {slot: capturing.slot, combo});
+  stopCapture();
+  if (!res.ok) { toast(res.error || 'не удалось назначить', true); return; }
+  state.config.hotkey_main = capturing && capturing.slot === 'alt' ? state.config.hotkey_main : state.config.hotkey_main;
+  await refresh();
+  toast('Готово: ' + (res.combo || combo));
+}
+
+function renderKeys(){
+  if (!state) return;
+  $('keyMain').textContent = humanize(state.config.hotkey_main);
+  $('keyAlt').textContent = humanize(state.config.hotkey_alt);
+  $('actionMain').value = state.config.action_main;
+  $('actionAlt').value = state.config.action_alt;
+}
+
+function badge(title, ok, detail, warnOnly){
+  const cls = ok ? 'ok' : (warnOnly ? 'warn' : 'bad');
+  return `<div class="badge"><span class="dot ${cls}"></span><div><b>${esc(title)}</b><small>${esc(detail || '')}</small></div></div>`;
+}
+
+function renderStatus(){
+  const st = state.status || {};
+  const out = [];
+  out.push(badge('Горячие клавиши', st.hotkeys_ok, st.hotkeys_detail, !st.hotkeys_ok));
+  out.push(badge('Виртуальная клавиатура', st.uinput, st.uinput_detail));
+  out.push(badge('Буфер обмена', st.clipboard, st.clipboard_detail));
+  out.push(badge('Переключение раскладки', st.layout_switch, st.layouts_detail, true));
+  out.push(badge('Значок в трее', st.tray, st.tray_detail, true));
+  out.push(badge('Сессия', true, st.session));
+  $('badges').innerHTML = out.join('');
+  $('trayActions').hidden = !!st.tray;
+}
+
+function renderLog(){
+  const evts = state.log || [];
+  const box = $('log');
+  if (!evts.length) { box.innerHTML = '<div class="hint">пока пусто</div>'; return; }
+  box.innerHTML = evts.map(e => {
+    if (e.err) return `<div><time>${e.time}</time><span class="err">${e.err}</span></div>`;
+    return `<div><time>${e.time}</time><span class="from">${esc(e.input)}</span><span>→</span>
+      <span>${esc(e.output)}</span><span class="dir">${e.dir}</span></div>`;
+  }).join('');
+}
+
+function esc(s){
+  return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+async function refresh(){
+  const r = await fetch('/api/state');
+  state = await r.json();
+  const c = state.config;
+  $('enabled').checked = c.enabled;
+  $('enabledLabel').textContent = c.enabled ? 'Включён' : 'Выключен';
+  $('switchLayout').checked = c.switch_layout_after;
+  $('restoreClipboard').checked = c.restore_clipboard;
+  $('pasteDelay').value = c.paste_delay_ms;
+  $('hotkeySource').value = c.hotkey_source || 'gnome';
+  $('copyShortcut').value = c.copy_shortcut;
+  $('pasteShortcut').value = c.paste_shortcut;
+  $('version').textContent = 'версия ' + (state.version || '');
+  $('cfgPath').textContent = (state.status && state.status.config_path) || '';
+  renderKeys();
+  renderStatus();
+  renderLog();
+}
+
+async function save(){
+  const cfg = Object.assign({}, state.config, {
+    switch_layout_after: $('switchLayout').checked,
+    restore_clipboard: $('restoreClipboard').checked,
+    paste_delay_ms: parseInt($('pasteDelay').value || '120', 10),
+    hotkey_source: $('hotkeySource').value,
+    copy_shortcut: $('copyShortcut').value,
+    paste_shortcut: $('pasteShortcut').value,
+    action_main: $('actionMain').value,
+    action_alt: $('actionAlt').value,
+  });
+  const res = await post('/api/config', cfg);
+  if (res.apply_error) toast('Сохранено, но клавиши: ' + res.apply_error, true);
+  else toast('Сохранено');
+  await refresh();
+}
+
+async function toggleEnabled(){
+  const cfg = Object.assign({}, state.config, {enabled: $('enabled').checked});
+  await post('/api/config', cfg);
+  await refresh();
+  toast($('enabled').checked ? 'Перехват включён' : 'Перехват выключен');
+}
+
+async function preview(){
+  const text = $('testIn').value;
+  $('testWas').textContent = text || '—';
+  if (!text) { $('testOut').textContent = '—'; return; }
+  const res = await post('/api/test', {text});
+  $('testOut').textContent = res.out || '—';
+}
+
+$('keyMain').addEventListener('click', () => startCapture('main', $('keyMain')));
+$('keyMain').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') startCapture('main', $('keyMain')); });
+$('keyAlt').addEventListener('click', () => startCapture('alt', $('keyAlt')));
+$('keyAlt').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') startCapture('alt', $('keyAlt')); });
+$('enabled').addEventListener('change', toggleEnabled);
+$('save').addEventListener('click', save);
+$('testIn').addEventListener('input', preview);
+$('tryNow').addEventListener('click', async () => {
+  const res = await post('/api/action', {action: $('actionMain').value});
+  if (res.ok) toast('Перевёрнуто: ' + (res.event.output || '')); else toast(res.error || 'не вышло', true);
+  await refresh();
+});
+$('enableTray').addEventListener('click', async () => {
+  const res = await post('/api/tray', {});
+  toast(res.ok ? 'Расширение включено, значок появится' : ('Не вышло: ' + res.error), !res.ok);
+  await refresh();
+});
+$('quit').addEventListener('click', async () => {
+  if (!confirm('Остановить Janus? Переворот перестанет работать.')) return;
+  await post('/api/quit', {});
+  document.body.innerHTML = '<div class="wrap"><section class="card"><h2>Остановлено</h2><p>Демон завершил работу. Запустите <code>janus daemon</code> снова, чтобы вернуть переворот.</p></section></div>';
+});
+
+refresh();
+setInterval(() => { fetch('/api/state').then(r => r.json()).then(s => { state = s; renderLog(); renderStatus(); }); }, 4000);
+</script>
+</body>
+</html>

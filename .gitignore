@@ -1,0 +1,9 @@
+# сборки
+/dist/
+*.exe
+/janus
+
+# локальное
+*.log
+*.out
+.DS_Store
