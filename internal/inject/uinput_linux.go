@@ -8,6 +8,7 @@ package inject
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -69,7 +70,35 @@ func whitespaceKey(r rune) (uint16, bool) {
 type Keyboard struct {
 	f    *os.File
 	path string
+
+	mu      sync.Mutex
+	pressed map[uint16]bool
 }
+
+// allowedKeys is deliberately narrow. The device must be able to send the
+// shortcuts Janus uses and nothing that can compose Ctrl+Alt+Del (Delete is not
+// in the list) or trigger power/sleep/function keys.
+var allowedKeys = []uint16{
+	KeyEsc, KeyTab, KeyEnter, KeyLeftCtrl, KeyLeftShift, KeyLeftAlt, KeyLeftMeta,
+	KeyRightCtrl, KeyRightShift, KeySpace, KeyCapsLock, KeyBackspace,
+	KeyInsert, KeyHome, KeyEnd, KeyLeft, KeyRight, KeyUp, KeyDown,
+	// digits 1..0
+	2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+	// top row punctuation - = [ ] ; ' ` \ ,
+	12, 13, 26, 27, 39, 40, 41, 43, 51, 52, 53,
+	// letters QWERTY
+	16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+	30, 31, 32, 33, 34, 35, 36, 37, 38,
+	44, 45, 46, 47, 48, 49, 50,
+}
+
+var allowed = func() map[uint16]bool {
+	m := make(map[uint16]bool, len(allowedKeys))
+	for _, k := range allowedKeys {
+		m[k] = true
+	}
+	return m
+}()
 
 // Available reports whether we may open /dev/uinput. It deliberately does not
 // create a device: that would make the desktop see a keyboard appear and vanish
@@ -99,7 +128,7 @@ func NewKeyboard(name string) (*Keyboard, error) {
 		return nil, fmt.Errorf("open /dev/uinput: %w", err)
 	}
 	f := os.NewFile(uintptr(fd), "/dev/uinput")
-	k := &Keyboard{f: f}
+	k := &Keyboard{f: f, pressed: map[uint16]bool{}}
 	cleanup := func(e error) (*Keyboard, error) {
 		f.Close()
 		return nil, e
@@ -108,8 +137,8 @@ func NewKeyboard(name string) (*Keyboard, error) {
 	if err := k.ioctl(uiSetEvBit, uintptr(evKey)); err != nil {
 		return cleanup(fmt.Errorf("UI_SET_EVBIT: %w", err))
 	}
-	for code := uintptr(0); code <= 0x2ff; code++ {
-		if err := k.ioctl(uiSetKeyBit, code); err != nil {
+	for _, code := range allowedKeys {
+		if err := k.ioctl(uiSetKeyBit, uintptr(code)); err != nil {
 			return cleanup(fmt.Errorf("UI_SET_KEYBIT %d: %w", code, err))
 		}
 	}
@@ -135,13 +164,34 @@ func (k *Keyboard) ioctl(req uintptr, arg uintptr) error {
 	return nil
 }
 
-// Close destroys the virtual device.
+// Close releases any held keys and destroys the virtual device.
 func (k *Keyboard) Close() error {
 	if k.f == nil {
 		return nil
 	}
+	_ = k.ReleaseAll()
 	_ = k.ioctl(uiDevDestroy, 0)
 	return k.f.Close()
+}
+
+// ReleaseAll lifts every key this device still holds. Called on errors and on
+// shutdown so a partial chord cannot leave Ctrl/Shift/Alt stuck.
+func (k *Keyboard) ReleaseAll() error {
+	k.mu.Lock()
+	keys := make([]uint16, 0, len(k.pressed))
+	for code := range k.pressed {
+		keys = append(keys, code)
+	}
+	k.mu.Unlock()
+	for _, code := range keys {
+		if err := k.write(evKey, code, keyRelease); err != nil {
+			return err
+		}
+		k.mu.Lock()
+		delete(k.pressed, code)
+		k.mu.Unlock()
+	}
+	return k.Sync()
 }
 
 func (k *Keyboard) write(typ, code uint16, value int32) error {
@@ -153,17 +203,42 @@ func (k *Keyboard) write(typ, code uint16, value int32) error {
 
 // KeyDown/hold and release a single key code.
 func (k *Keyboard) KeyDown(code uint16) error {
-	return k.write(evKey, code, keyPress)
+	if !allowed[code] {
+		return fmt.Errorf("key code %d is not enabled on the Janus keyboard", code)
+	}
+	if err := k.write(evKey, code, keyPress); err != nil {
+		return err
+	}
+	k.mu.Lock()
+	k.pressed[code] = true
+	k.mu.Unlock()
+	return nil
 }
 
 // KeyUp releases a single key code.
-func (k *Keyboard) KeyUp(code uint16) error { return k.write(evKey, code, keyRelease) }
+func (k *Keyboard) KeyUp(code uint16) error {
+	if !allowed[code] {
+		return fmt.Errorf("key code %d is not enabled on the Janus keyboard", code)
+	}
+	if err := k.write(evKey, code, keyRelease); err != nil {
+		return err
+	}
+	k.mu.Lock()
+	delete(k.pressed, code)
+	k.mu.Unlock()
+	return nil
+}
 
 // Sync flushes pending events.
 func (k *Keyboard) Sync() error { return k.write(evSyn, 0, synReport) }
 
 // Tap presses and releases one key.
-func (k *Keyboard) Tap(code uint16) error {
+func (k *Keyboard) Tap(code uint16) (err error) {
+	defer func() {
+		if err != nil {
+			_ = k.ReleaseAll()
+		}
+	}()
 	if err := k.KeyDown(code); err != nil {
 		return err
 	}
@@ -195,7 +270,12 @@ func (k *Keyboard) TapModifiers(mods []uint16) error {
 }
 
 // Chord presses mods in order, taps key, then releases the modifiers.
-func (k *Keyboard) Chord(mods []uint16, key uint16) error {
+func (k *Keyboard) Chord(mods []uint16, key uint16) (err error) {
+	defer func() {
+		if err != nil {
+			_ = k.ReleaseAll()
+		}
+	}()
 	for _, m := range mods {
 		if err := k.KeyDown(m); err != nil {
 			return err
@@ -219,7 +299,12 @@ func (k *Keyboard) Chord(mods []uint16, key uint16) error {
 
 // TypeText types text assuming layout is the active system layout: for every
 // rune it finds the physical key and presses Shift when needed.
-func (k *Keyboard) TypeText(text string, layout convert.LayoutID) error {
+func (k *Keyboard) TypeText(text string, layout convert.LayoutID) (err error) {
+	defer func() {
+		if err != nil {
+			_ = k.ReleaseAll()
+		}
+	}()
 	shift := false
 	for _, r := range text {
 		if code, ok := whitespaceKey(r); ok {

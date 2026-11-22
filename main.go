@@ -6,9 +6,13 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,7 +25,7 @@ import (
 )
 
 // Version is the program version.
-const Version = "1.2.0"
+const Version = "1.2.1"
 
 // platform is the per-OS half of the daemon.
 type platform interface {
@@ -136,6 +140,8 @@ func main() {
 		runStatus()
 	case "diag":
 		runDiag()
+	case "logs", "log":
+		runLogs()
 	case "convert":
 		runConvert()
 	case "ui":
@@ -161,6 +167,7 @@ func usage() {
   janus convert ТЕКСТ     перевести текст из терминала
   janus status            показать состояние
   janus diag              диагностика для отчёта о проблеме
+  janus logs [N]          последние N строк журнала (по умолчанию 100)
   janus ui                открыть настройки в браузере
   janus install           прописать горячие клавиши и автозапуск
   janus uninstall         убрать горячие клавиши и автозапуск
@@ -181,22 +188,64 @@ func exePath() string {
 
 // ---------------------------------------------------------------- logging
 
+const logMaxSize = 2 << 20 // rotate at 2 MiB, keep one previous file
+
 var (
 	logMu   sync.Mutex
 	logFile *os.File
+	logSize int64
 )
 
 func logPath() string { return filepath.Join(config.Dir(), "janus.log") }
 
+// logWriter sends messages from the standard library (net/http, xgb, ...) into
+// the same journal, with the same timestamps.
+type logWriter struct{}
+
+func (logWriter) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\r\n")
+	if line != "" {
+		logf("stdlib: %s", line)
+	}
+	return len(p), nil
+}
+
 func initLog() {
+	_ = os.MkdirAll(config.Dir(), 0o755)
+	path := logPath()
+	if st, err := os.Stat(path); err == nil && st.Size() > logMaxSize {
+		_ = os.Remove(path + ".1")
+		_ = os.Rename(path, path+".1")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	logFile = f
+	if st, err := f.Stat(); err == nil {
+		logSize = st.Size()
+	}
+	log.SetFlags(0)
+	log.SetOutput(logWriter{})
+}
+
+func rotateLocked() {
+	if logFile == nil {
+		return
+	}
+	_ = logFile.Close()
+	logFile = nil
+	_ = os.Remove(logPath() + ".1")
+	if err := os.Rename(logPath(), logPath()+".1"); err != nil {
+		logFile, _ = os.OpenFile(logPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		return
+	}
 	f, err := os.OpenFile(logPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
-	if st, err := f.Stat(); err == nil && st.Size() > 512*1024 {
-		_ = f.Truncate(0)
-	}
 	logFile = f
+	logSize = 0
 }
 
 func logf(format string, args ...any) {
@@ -205,27 +254,110 @@ func logf(format string, args ...any) {
 	if logFile == nil {
 		return
 	}
-	fmt.Fprintf(logFile, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
+	line := fmt.Sprintf("%s %s\n", time.Now().Format("2006-01-02 15:04:05.000"), fmt.Sprintf(format, args...))
+	n, _ := logFile.WriteString(line)
+	logSize += int64(n)
+	if logSize > logMaxSize {
+		rotateLocked()
+	}
+}
+
+func bootID() string {
+	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func rssBytes() uint64 {
+	b, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0
+	}
+	var size, resident uint64
+	if _, err := fmt.Sscanf(string(b), "%d %d", &size, &resident); err != nil {
+		return 0
+	}
+	return resident * uint64(os.Getpagesize())
+}
+
+func heartbeat(done <-chan struct{}, started time.Time) {
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			logf("heartbeat uptime=%s rss=%dMB heap=%dMB goroutines=%d",
+				time.Since(started).Round(time.Second), rssBytes()>>20, ms.HeapAlloc>>20, runtime.NumGoroutine())
+		}
+	}
+}
+
+func short(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func runLogs() {
+	n := 100
+	if len(os.Args) > 2 {
+		if v, err := strconv.Atoi(os.Args[2]); err == nil && v > 0 {
+			n = v
+		}
+	}
+	data, err := os.ReadFile(logPath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "журнал:", err)
+		os.Exit(1)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	fmt.Println(strings.Join(lines, "\n"))
 }
 
 // ---------------------------------------------------------------- daemon
 
 func newApp() *app {
+	initLog()
 	store, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config:", err)
+		logf("config load: %v", err)
 	}
-	initLog()
 	p := newPlatform()
 	a := &app{store: store, plat: p, quit: make(chan struct{})}
 	a.eng = engine.New(store, p.Keyboard(), p.Clipboard(), p.Layouts())
 	a.eng.Logf = logf
+	a.eng.LogText = os.Getenv("JANUS_LOG_TEXT") == "1"
 	return a
 }
 
 func runDaemon() {
+	started := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			logf("PANIC: %v\n%s", r, debug.Stack())
+			fmt.Fprintln(os.Stderr, "panic:", r)
+			os.Exit(1)
+		}
+	}()
 	a := newApp()
 	cfg := a.store.Get()
+	logf("start version=%s pid=%d uid=%d go=%s os=%s arch=%s boot=%s session=%q args=%q",
+		Version, os.Getpid(), currentUID(), runtime.Version(), runtime.GOOS, runtime.GOARCH,
+		bootID(), sessionName(), os.Args)
+	logf("config=%s log=%s exe=%s enabled=%v source=%s main=%s alt=%s",
+		a.store.FilePath(), logPath(), exePath(), cfg.Enabled, cfg.Source, cfg.HotkeyMain, cfg.HotkeyAlt)
 
 	// Windows claims its single-instance mutex before the IPC port file is
 	// touched, so a second copy cannot break the running daemon.
@@ -294,9 +426,13 @@ func runDaemon() {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go heartbeat(a.quit, started)
+	var got os.Signal
 	select {
-	case <-sig:
+	case got = <-sig:
+		logf("signal received: %v", got)
 	case <-a.quit:
+		logf("quit requested by UI/tray")
 	}
 	// Stop accepting hotkey commands first, then flush the clipboard and tear
 	// the platform down. A command that arrived just before the listener closed
@@ -304,11 +440,12 @@ func runDaemon() {
 	stop()
 	a.eng.Close()
 	a.plat.Stop()
-	logf("daemon stopped")
+	logf("daemon stopped after %s", time.Since(started).Round(time.Second))
 }
 
 // execute runs one action, used by the IPC handler and by the Windows hotkeys.
 func (a *app) execute(slot string) string {
+	start := time.Now()
 	cfg := a.store.Get()
 	action := cfg.ActionMain
 	if slot == "alt" {
@@ -316,14 +453,32 @@ func (a *app) execute(slot string) string {
 	}
 	ev, err := a.eng.Run(action)
 	if err != nil {
-		logf("action %s failed: %v", slot, err)
+		logf("action %s failed after %s: %v", slot, time.Since(start).Round(time.Millisecond), err)
 		return "err: " + err.Error()
 	}
-	logf("action %s ok: %q -> %q", slot, ev.Input, ev.Output)
+	logf("action %s ok after %s: in=%d bytes out=%d bytes",
+		slot, time.Since(start).Round(time.Millisecond), len(ev.Input), len(ev.Output))
 	return "ok: " + ev.Output
 }
 
 func (a *app) handleIPC(cmd string) string {
+	ans := a.dispatchIPC(cmd)
+	logAns := short(ans, 120)
+	if strings.HasPrefix(cmd, "action ") {
+		// The answer of an action contains the converted text: never put it in
+		// the journal by default.
+		switch {
+		case strings.HasPrefix(ans, "ok:"):
+			logAns = fmt.Sprintf("ok output_len=%d", len(ans)-len("ok: "))
+		case strings.HasPrefix(ans, "err:"):
+			logAns = short(ans, 120)
+		}
+	}
+	logf("ipc command=%q answer=%s", cmd, logAns)
+	return ans
+}
+
+func (a *app) dispatchIPC(cmd string) string {
 	switch cmd {
 	case "action main", "action alt":
 		return a.execute(strings.TrimPrefix(cmd, "action "))

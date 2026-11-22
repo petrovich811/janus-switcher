@@ -25,6 +25,8 @@ import (
 
 func runtimeName() string { return "linux" }
 
+func currentUID() int { return os.Getuid() }
+
 // initConsole is a no-op: a Linux binary already has stdout.
 func initConsole() {}
 
@@ -52,8 +54,10 @@ func (l *lazyKeyboard) get() (*inject.Keyboard, error) {
 	kb, err := inject.NewKeyboard("Janus virtual keyboard")
 	if err != nil {
 		l.err = err
+		logf("uinput: create failed: %v", err)
 		return nil, err
 	}
+	logf("uinput: virtual keyboard created")
 	l.kb = kb
 	return kb, nil
 }
@@ -95,6 +99,7 @@ func (l *lazyKeyboard) Close() error {
 	defer l.mu.Unlock()
 	if l.kb != nil {
 		err := l.kb.Close()
+		logf("uinput: virtual keyboard destroyed: %v", err)
 		l.kb = nil
 		return err
 	}
@@ -111,14 +116,30 @@ func (l *lazyClipboard) get() (*clipboard.X11, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.clip != nil {
-		return l.clip, nil
+		if !l.clip.Broken() {
+			return l.clip, nil
+		}
+		logf("x11: clipboard connection is broken; reopening")
+		l.clip.Close()
+		l.clip = nil
 	}
 	c, err := clipboard.Open()
 	if err != nil {
+		logf("x11: clipboard open failed: %v", err)
 		return nil, err
 	}
+	logf("x11: clipboard connection opened")
 	l.clip = c
 	return c, nil
+}
+
+func (l *lazyClipboard) reset(c *clipboard.X11) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.clip == c {
+		l.clip.Close()
+		l.clip = nil
+	}
 }
 
 func (l *lazyClipboard) ReadText() (string, error) {
@@ -126,7 +147,14 @@ func (l *lazyClipboard) ReadText() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return c.ReadText()
+	s, err := c.ReadText()
+	if err != nil && c.Broken() {
+		l.reset(c)
+		if c2, err2 := l.get(); err2 == nil {
+			return c2.ReadText()
+		}
+	}
+	return s, err
 }
 
 func (l *lazyClipboard) WriteText(text string) error {
@@ -134,7 +162,28 @@ func (l *lazyClipboard) WriteText(text string) error {
 	if err != nil {
 		return err
 	}
-	return c.WriteText(text)
+	err = c.WriteText(text)
+	if err != nil && c.Broken() {
+		l.reset(c)
+		if c2, err2 := l.get(); err2 == nil {
+			return c2.WriteText(text)
+		}
+	}
+	return err
+}
+
+// Healthy checks the X connection with a real request, not just a cached pointer.
+func (l *lazyClipboard) Healthy() bool {
+	c, err := l.get()
+	if err != nil {
+		return false
+	}
+	if err := c.Ping(); err != nil {
+		logf("x11: ping failed: %v", err)
+		l.reset(c)
+		return false
+	}
+	return true
 }
 
 func (l *lazyClipboard) BeginCopy() string {
@@ -244,6 +293,7 @@ func (p *linuxPlatform) Start(a *app) error {
 				}
 				return "Janus — выключен"
 			},
+			Logf: logf,
 		})
 		if err != nil {
 			logf("tray: %v", err)
@@ -297,14 +347,21 @@ func (p *linuxPlatform) Status() map[string]any {
 		st["hotkeys_detail"] = "нет gsettings — не сессия GNOME"
 	} else if b, err := p.gh.Current("main"); err != nil {
 		st["hotkeys_ok"] = false
-		st["hotkeys_detail"] = "сочетание не зарегистрировано"
+		st["hotkeys_detail"] = "основное сочетание не зарегистрировано"
+	} else if b2, err := p.gh.Current("alt"); err != nil {
+		st["hotkeys_ok"] = false
+		st["hotkeys_detail"] = "второе сочетание не зарегистрировано"
 	} else {
 		pretty := b.Binding
 		if c, err := hotkey.Parse(b.Binding); err == nil {
 			pretty = c.String()
 		}
+		pretty2 := b2.Binding
+		if c, err := hotkey.Parse(b2.Binding); err == nil {
+			pretty2 = c.String()
+		}
 		st["hotkeys_ok"] = true
-		st["hotkeys_detail"] = pretty + " (GNOME)"
+		st["hotkeys_detail"] = pretty + " / " + pretty2 + " (GNOME)"
 	}
 
 	if err := inject.Available(); err != nil {
@@ -315,9 +372,9 @@ func (p *linuxPlatform) Status() map[string]any {
 		st["uinput_detail"] = "/dev/uinput доступен"
 	}
 
-	if _, err := p.clip.get(); err != nil {
+	if !p.clip.Healthy() {
 		st["clipboard"] = false
-		st["clipboard_detail"] = err.Error()
+		st["clipboard_detail"] = "X11-мост не отвечает или переподключается"
 	} else {
 		st["clipboard"] = true
 		st["clipboard_detail"] = "X11-мост активен"
@@ -336,16 +393,23 @@ func (p *linuxPlatform) Status() map[string]any {
 		st["tray_detail"] = "значок в панели"
 	} else if p.item != nil {
 		st["tray"] = false
-		st["tray_detail"] = "расширение значков выгрузилось, значок вернётся после входа в сессию"
+		if p.bus != nil && !tray.Available(p.bus) {
+			st["tray_detail"] = "ждёт StatusNotifierWatcher (расширение AppIndicator не запущено)"
+		} else {
+			st["tray_detail"] = "значок не зарегистрирован, повторяю попытку"
+		}
 	} else if p.bus != nil && tray.Available(p.bus) && tray.RegisteredCount(p.bus) > 0 {
 		st["tray"] = true
 		st["tray_detail"] = "значок держит запущенный демон"
+	} else if p.bus != nil && tray.RegisteredCount(p.bus) > 0 {
+		st["tray"] = false
+		st["tray_detail"] = "значок держит демон, но StatusNotifierWatcher не найден (расширение AppIndicator неактивно)"
 	} else if p.bus != nil && tray.Available(p.bus) {
 		st["tray"] = false
 		st["tray_detail"] = "значок не зарегистрирован"
 	} else {
 		st["tray"] = false
-		st["tray_detail"] = "в GNOME значки скрыты — нужно расширение AppIndicator"
+		st["tray_detail"] = "StatusNotifierWatcher не найден — расширение AppIndicator неактивно"
 	}
 	return st
 }
@@ -369,13 +433,16 @@ func (p *linuxPlatform) Diag() []string {
 	if c, err := hotkey.Parse(newAppStore().Get().HotkeyMain); err == nil {
 		out = append(out, fmt.Sprintf("сочетание в конфиге: %s (%s)", c.String(), c.Key))
 	}
+	for _, line := range hotkeyGrabFailures() {
+		out = append(out, "gsd (журнал):      "+line)
+	}
 	if err := inject.Available(); err != nil {
 		out = append(out, "uinput:            "+err.Error())
 	} else {
 		out = append(out, "uinput:            /dev/uinput открывается")
 	}
-	if _, err := p.clip.get(); err != nil {
-		out = append(out, "буфер обмена:      "+err.Error())
+	if !p.clip.Healthy() {
+		out = append(out, "буфер обмена:      X11-мост не отвечает (нужно переподключение)")
 	} else {
 		out = append(out, "буфер обмена:      X11-мост отвечает")
 	}
@@ -432,6 +499,44 @@ func (p *linuxPlatform) OpenURL(url string) error {
 }
 
 func (p *linuxPlatform) EnableTray() error { return hotkey.EnableExtension() }
+
+// hotkeyGrabFailures reports accelerators gsd-media-keys could not grab (for
+// example a combination already used by the VT or by another app).
+func hotkeyGrabFailures() []string {
+	args := []string{"journalctl", "--user", "-b", "--no-pager", "-o", "short-iso",
+		"_COMM=gsd-media-keys", "-g", "Failed to grab accelerator.*janus-"}
+	if since := lastStartTime(); since != "" {
+		args = append(args[:2], append([]string{"--since", since}, args[2:]...)...)
+	}
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		return nil
+	}
+	var res []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			res = append(res, line)
+		}
+	}
+	return res
+}
+
+// lastStartTime returns the timestamp of the last daemon start from the journal,
+// so diagnostics does not report grab errors from before the current run.
+func lastStartTime() string {
+	data, err := os.ReadFile(logPath())
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "start version=") && len(lines[i]) >= 19 {
+			return lines[i][:19]
+		}
+	}
+	return ""
+}
 
 // keyDaemonCount counts gsd-media-keys: on GNOME it is the process that grabs
 // the custom shortcuts, and without it every hotkey stays silent.

@@ -66,6 +66,9 @@ type Engine struct {
 
 	// Logf receives diagnostics; nil is fine.
 	Logf func(format string, args ...any)
+	// LogText adds the actual clipboard/input text to the log. Off by default:
+	// the journal must not become a keylogger.
+	LogText bool
 
 	run  sync.Mutex
 	evMu sync.Mutex
@@ -92,6 +95,13 @@ func (e *Engine) logf(format string, args ...any) {
 	if e.Logf != nil {
 		e.Logf(format, args...)
 	}
+}
+
+func (e *Engine) textInfo(s string) string {
+	if e.LogText {
+		return fmt.Sprintf("len=%d %q", len(s), s)
+	}
+	return fmt.Sprintf("len=%d", len(s))
 }
 
 // Log returns the recorded events, newest first.
@@ -121,6 +131,8 @@ func (e *Engine) Run(a config.Action) (Event, error) {
 	if e.closed {
 		return Event{}, fmt.Errorf("engine is closed")
 	}
+	start := time.Now()
+	defer func() { e.logf("run %s finished in %s", a, time.Since(start).Round(time.Millisecond)) }()
 
 	// If the previous conversion is still waiting to put the old clipboard
 	// back, do it now: otherwise its timer would overwrite the result of the
@@ -157,9 +169,9 @@ func (e *Engine) Run(a config.Action) (Event, error) {
 	}
 
 	before, _ := e.clip.ReadText()
-	e.logf("action %s, clipboard before=%q", a, before)
+	e.logf("action %s, clipboard before %s", a, e.textInfo(before))
 	text, ok := e.grab(a, before, copyMods, copyCode)
-	e.logf("grabbed %q ok=%v", text, ok)
+	e.logf("grabbed %s ok=%v", e.textInfo(text), ok)
 	if !ok {
 		// On Linux BeginCopy puts a probe on the clipboard so that a copy can
 		// be detected. If nothing was copied, the probe must be replaced by the

@@ -37,7 +37,7 @@ const (
 
 // defaultsVersion is bumped when the built-in hotkey defaults change; Load
 // migrates an old untouched default once and records the version.
-const defaultsVersion = 2
+const defaultsVersion = 3
 
 // Config is the whole on-disk configuration.
 type Config struct {
@@ -87,7 +87,7 @@ func Default() Config {
 		Enabled:           true,
 		Source:            SourceGNOME,
 		HotkeyMain:        "<Control><Shift>F10",
-		HotkeyAlt:         "<Control><Alt>F10",
+		HotkeyAlt:         "<Control><Shift>F9",
 		ActionMain:        ActionSelection,
 		ActionAlt:         ActionWord,
 		SwitchLayoutAfter: true,
@@ -175,8 +175,9 @@ func Load() (*Store, error) {
 	return s, nil
 }
 
-// migrateDefaults moves only the exact old Pause defaults to F10. A user who
-// chose Pause deliberately keeps it, because DefaultsVersion is already 2.
+// migrateDefaults moves only the exact old defaults to the current ones. A
+// user who chose a combination deliberately keeps it, because DefaultsVersion
+// is already at the current value.
 func (s *Store) migrateDefaults() bool {
 	if s.cfg.DefaultsVersion >= defaultsVersion {
 		return false
@@ -185,7 +186,11 @@ func (s *Store) migrateDefaults() bool {
 	if s.cfg.HotkeyMain == "" || s.cfg.HotkeyMain == "<Control><Shift>Pause" {
 		s.cfg.HotkeyMain = d.HotkeyMain
 	}
-	if s.cfg.HotkeyAlt == "" || s.cfg.HotkeyAlt == "<Shift>Pause" {
+	if s.cfg.HotkeyAlt == "" || s.cfg.HotkeyAlt == "<Shift>Pause" ||
+		s.cfg.HotkeyAlt == "<Control><Alt>F10" {
+		// Ctrl+Alt+F10 is a VT-switch combination on Linux: gsd-media-keys
+		// cannot grab it (observed in the 2026-11-22 boot log). Move that
+		// former default to F9, which is free.
 		s.cfg.HotkeyAlt = d.HotkeyAlt
 	}
 	s.cfg.DefaultsVersion = defaultsVersion

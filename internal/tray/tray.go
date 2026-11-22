@@ -30,6 +30,7 @@ type Callbacks struct {
 	Quit    func()
 	Enabled func() bool
 	Title   func() string
+	Logf    func(format string, args ...any)
 }
 
 // Item is a live tray icon.
@@ -39,9 +40,10 @@ type Item struct {
 	props *prop.Properties
 	mmenu *prop.Properties
 
-	mu       sync.Mutex
-	revision uint32
-	name     string
+	mu         sync.Mutex
+	revision   uint32
+	name       string
+	registered bool
 }
 
 // Available reports whether a StatusNotifierWatcher is present, which means the
@@ -158,19 +160,40 @@ func Add(conn *dbus.Conn, cb Callbacks) (*Item, error) {
 	it.name = name
 
 	if !Available(conn) {
-		it.Close()
-		return nil, fmt.Errorf("no StatusNotifierWatcher on the bus (tray icons are switched off in the desktop)")
+		// The watcher often appears a second or two after the session starts.
+		// Keep the item and let Watch register it later; returning an error
+		// here would disable the tray until a manual restart.
+		it.logf("tray: StatusNotifierWatcher is not on the bus yet; will retry")
+		return it, nil
 	}
 	w := conn.Object(watcherDst, watcherObj)
 	if err := w.Call(watcherDst+".RegisterStatusNotifierItem", 0, name).Err; err != nil {
-		it.Close()
-		return nil, fmt.Errorf("register with the tray watcher: %w", err)
+		it.logf("tray: register with watcher: %v; will retry", err)
+		return it, nil
 	}
+	it.setRegistered(true)
 	return it, nil
+}
+
+func (it *Item) logf(format string, args ...any) {
+	if it.cb.Logf != nil {
+		it.cb.Logf(format, args...)
+	}
+}
+
+func (it *Item) setRegistered(v bool) bool {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	if it.registered == v {
+		return false
+	}
+	it.registered = v
+	return true
 }
 
 // Close gives the bus name back so that the panel drops the icon at once.
 func (it *Item) Close() {
+	it.setRegistered(false)
 	if it.name != "" {
 		_, _ = it.conn.ReleaseName(it.name)
 	}
@@ -189,17 +212,32 @@ func (it *Item) Watch(done <-chan struct{}) {
 			case <-done:
 				return
 			case <-t.C:
-				if Available(it.conn) {
-					it.conn.Object(watcherDst, watcherObj).
-						Call(watcherDst+".RegisterStatusNotifierItem", 0, it.name)
+				if !Available(it.conn) {
+					if it.setRegistered(false) {
+						it.logf("tray: StatusNotifierWatcher disappeared")
+					}
+					continue
+				}
+				err := it.conn.Object(watcherDst, watcherObj).
+					Call(watcherDst+".RegisterStatusNotifierItem", 0, it.name).Err
+				if it.setRegistered(err == nil) {
+					if err != nil {
+						it.logf("tray: registration failed: %v", err)
+					} else {
+						it.logf("tray: registered with StatusNotifierWatcher")
+					}
 				}
 			}
 		}
 	}()
 }
 
-// Registered reports whether the icon currently sits in the panel.
-func (it *Item) Registered() bool { return Available(it.conn) }
+// Registered reports whether our icon is currently registered with the watcher.
+func (it *Item) Registered() bool {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+	return it.registered
+}
 
 // Refresh updates the tooltip and the menu after the configuration changed.
 func (it *Item) Refresh() {

@@ -4,7 +4,7 @@
 Он описывает, **что это за программа, как она устроена, что нельзя ломать и как проверять
 изменения**. Архитектурные компромиссы и их причины — в [DECISIONS.md](DECISIONS.md).
 
-Обновлён: 2026-11-22, версия 1.2.0.
+Обновлён: 2026-11-22, версия 1.2.1.
 
 ---
 
@@ -207,7 +207,8 @@ RegisterHotKey (скрытое окно, отдельный залоченный
 ### 4.9. Горячие клавиши
 
 - По умолчанию: `<Control><Shift>F10` и `<Control><Alt>F10`. Это осознанная замена Pause:
-  на 75% клавиатурах Pause/Insert/PrintScreen часто отсутствуют.
+  на 75% клавиатурах Pause/Insert/PrintScreen часто отсутствуют. Второе — F9,
+  потому что Ctrl+Alt+F10 оказался переключением на VT10 и не захватывался GNOME.
 - Парсер (`internal/hotkey`) принимает F1–F24, буквы, цифры, стрелки, Home/End/PageUp/PageDown,
   Insert/Delete, пунктуацию (`minus`, `equal`, `bracketleft`, `bracketright`, `backslash`,
   `semicolon`, `apostrophe`, `comma`, `period`, `slash`, `grave`) и цифровой блок
@@ -221,9 +222,25 @@ RegisterHotKey (скрытое окно, отдельный залоченный
   Осознанно выбранный Pause с `defaults_version: 2` не трогается.
 - Живой тест на этой машине: `<Control><Shift>F10`, `<Control><Shift>backslash`,
   `<Control><Alt>backslash` и `<Control><Shift>j` сработали в GNOME при активной русской
-  раскладке.
+  раскладке. `<Control><Alt>F10` не захватывается: это VT10; второе умолчание — F9.
 
-### 4.10. Язык и интерфейс
+### 4.10. Логирование и health
+
+- Журнал `~/.config/janus/janus.log`, ротация при 2 МиБ в `janus.log.1`.
+- По умолчанию **нельзя** писать текст буфера/ввода: только длину. Полный текст —
+  только при `JANUS_LOG_TEXT=1`.
+- Обязательные события: старт (версия, pid, uid, boot_id, сессия), сигнал
+  остановки, X11 open/close/reopen, tray watcher appeared/lost, uinput create/
+  destroy, действие с длительностью и длиной, panic со стеком, heartbeat.
+- `X11.Broken()`/`Ping()` и `lazyClipboard` переоткрывают соединение. `status` и
+  `diag` должны проверять реальный запрос, а не наличие указателя.
+- Tray `Add` не фатален без `StatusNotifierWatcher`; `Watch` запускается всегда и
+  повторяет регистрацию; `Registered()` отражает факт регистрации.
+- `uinput` объявляет только allowlist клавиш (без Delete/Power/F-клавиш) и
+  отпускает всё при ошибке/остановке. Нельзя расширять allowlist без
+  пересмотра этого решения.
+
+### 4.11. Язык и интерфейс
 
 - UI, README, CHANGELOG, DECISIONS — по-русски.
 - Внутренние комментарии — по-английски (так уже принято в коде).
@@ -306,6 +323,11 @@ JANUS_CONFIG_DIR=/tmp/janus-cfg /tmp/janus diag
 - Нет автопереворота при наборе.
 - X11-мост требует Xwayland; в чистом Sway буфер не работает.
 - `/dev/uinput` должен быть доступен пользователю сессии.
+- Виртуальная клавиатура не умеет Delete/F-клавиши/Power: allowlist; copy/paste
+  через них не сработает.
+- Ctrl+Alt+F1–F12 — переключение VT, для хоткея не годится.
+- `janus logs` и `JANUS_LOG_TEXT` — см. README; `XGB ... EOF` теперь с меткой
+  времени.
 - Windows: только amd64; работа в elevated-окнах невозможна.
 - `DummyKey` (VK_PACKET) на Windows не проверен на живой системе.
 
@@ -364,3 +386,5 @@ JANUS_CONFIG_DIR=/tmp/janus-cfg /tmp/janus diag
 - [DECISIONS.md](DECISIONS.md) — журнал решений.
 - [CHANGELOG.md](CHANGELOG.md) — изменения по версиям.
 - [AGENTS.md](AGENTS.md) — короткая памятка для агентов.
+- [docs/incident-2026-11-22-reboot.md](docs/incident-2026-11-22-reboot.md) — разбор
+  перезагрузки 22.11.2026.

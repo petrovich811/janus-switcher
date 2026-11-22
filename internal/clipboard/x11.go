@@ -63,6 +63,7 @@ type X11 struct {
 	// property, and concurrent reads would overwrite each other's answers.
 	reqMu       sync.Mutex
 	mu          sync.Mutex
+	broken      bool
 	owner       string
 	lastTarget  xproto.Atom
 	lastProps   map[xproto.Atom]xproto.Atom
@@ -125,6 +126,9 @@ func (c *X11) loop() {
 			if err != nil {
 				debugf("event loop error: %v", err)
 			}
+			c.mu.Lock()
+			c.broken = true
+			c.mu.Unlock()
 			return
 		}
 		switch e := ev.(type) {
@@ -245,6 +249,9 @@ func (c *X11) handleSelectionRequest(e xproto.SelectionRequestEvent) {
 func (c *X11) ReadSelection(selection xproto.Atom, timeout time.Duration) (string, error) {
 	c.reqMu.Lock()
 	defer c.reqMu.Unlock()
+	if c.Broken() {
+		return "", ErrNoDisplay
+	}
 
 	owner, err := xproto.GetSelectionOwner(c.conn, selection).Reply()
 	if err != nil {
@@ -359,6 +366,9 @@ func (c *X11) WaitCopied(token string, timeout time.Duration) (string, bool) {
 
 // WriteText takes ownership of CLIPBOARD and serves text until it is replaced.
 func (c *X11) WriteText(text string) error {
+	if c.Broken() {
+		return ErrNoDisplay
+	}
 	c.mu.Lock()
 	c.owner = text
 	c.mu.Unlock()
@@ -377,5 +387,31 @@ func (c *X11) owned() string {
 // OwnedText reports the text we are currently serving.
 func (c *X11) OwnedText() string { return c.owned() }
 
+// Broken reports whether the event loop has stopped and the connection is unusable.
+func (c *X11) Broken() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.broken
+}
+
+// Ping checks that the X connection still answers, without touching the clipboard.
+func (c *X11) Ping() error {
+	if c.Broken() {
+		return ErrNoDisplay
+	}
+	if _, err := xproto.GetInputFocus(c.conn).Reply(); err != nil {
+		c.mu.Lock()
+		c.broken = true
+		c.mu.Unlock()
+		return fmt.Errorf("%w: %v", ErrNoDisplay, err)
+	}
+	return nil
+}
+
 // Close releases the X connection.
-func (c *X11) Close() { c.conn.Close() }
+func (c *X11) Close() {
+	c.mu.Lock()
+	c.broken = true
+	c.mu.Unlock()
+	c.conn.Close()
+}

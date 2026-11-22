@@ -35,6 +35,8 @@ var (
 
 func runtimeName() string { return "windows" }
 
+func currentUID() int { return -1 }
+
 func initConsole() { winhost.EnsureConsole() }
 
 func sessionName() string {

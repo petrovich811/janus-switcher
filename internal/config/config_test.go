@@ -36,8 +36,8 @@ func TestLoadMigratesOldPauseDefaults(t *testing.T) {
 	if cfg.HotkeyMain != "<Control><Shift>F10" {
 		t.Errorf("main = %q, want the F10 default", cfg.HotkeyMain)
 	}
-	if cfg.HotkeyAlt != "<Control><Alt>F10" {
-		t.Errorf("alt = %q, want the Alt+F10 default", cfg.HotkeyAlt)
+	if cfg.HotkeyAlt != "<Control><Shift>F9" {
+		t.Errorf("alt = %q, want the F9 default", cfg.HotkeyAlt)
 	}
 	if cfg.DefaultsVersion != defaultsVersion {
 		t.Errorf("defaults version = %d, want %d", cfg.DefaultsVersion, defaultsVersion)
@@ -54,6 +54,29 @@ func TestLoadMigratesOldPauseDefaults(t *testing.T) {
 	}
 	if saved.HotkeyMain != cfg.HotkeyMain || saved.DefaultsVersion != defaultsVersion {
 		t.Errorf("saved config = %+v", saved)
+	}
+}
+
+func TestLoadMovesBrokenAltF10ToF9(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("JANUS_CONFIG_DIR", dir)
+	cfg := Default()
+	cfg.DefaultsVersion = 2
+	cfg.HotkeyMain = "<Control><Shift>F10"
+	cfg.HotkeyAlt = "<Control><Alt>F10"
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get().HotkeyAlt; got != "<Control><Shift>F9" {
+		t.Errorf("alt = %q; Ctrl+Alt+F10 is a VT combination and must move to F9", got)
 	}
 }
 
