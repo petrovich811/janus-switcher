@@ -183,6 +183,11 @@ func (e *Engine) Run(a config.Action) (Event, error) {
 		ev.Dir = "en→ru"
 	}
 	if out == text || out == "" {
+		// The selection was already in the target layout, so the clipboard now
+		// holds the copied text; put the old one back if the user asked for it.
+		if cfg.RestoreClipboard {
+			e.scheduleRestoreLocked(before, text)
+		}
 		ev.Err = "текст не изменился"
 		e.record(ev)
 		return ev, nil
@@ -195,6 +200,9 @@ func (e *Engine) Run(a config.Action) (Event, error) {
 	}
 	time.Sleep(time.Duration(cfg.PasteDelayMs) * time.Millisecond)
 	if err := e.kb.Chord(pasteMods, pasteCode); err != nil {
+		if cfg.RestoreClipboard {
+			_ = e.clip.WriteText(before)
+		}
 		ev.Err = "paste: " + err.Error()
 		e.record(ev)
 		return ev, err

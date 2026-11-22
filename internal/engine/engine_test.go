@@ -257,6 +257,25 @@ func TestRunRestoresProbeAfterFailedGrab(t *testing.T) {
 	}
 }
 
+func TestRunNoOpStillRestoresClipboard(t *testing.T) {
+	cfg := baseConfig()
+	cfg.RestoreClipboard = true
+	e, _, clip, _, _ := newTestEngine(t, cfg, "12345")
+	clip.text = "старый буфер"
+
+	ev, err := e.Run(config.ActionSelection)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if ev.Err != "текст не изменился" {
+		t.Fatalf("err = %q", ev.Err)
+	}
+	e.Close()
+	if clip.text != "старый буфер" {
+		t.Errorf("clipboard = %q, want the original text back", clip.text)
+	}
+}
+
 func TestRunReportsClipboardFailure(t *testing.T) {
 	cfg := baseConfig()
 	e, _, clip, _, _ := newTestEngine(t, cfg, "Ghbdtn")

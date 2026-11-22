@@ -21,7 +21,7 @@ import (
 )
 
 // Version is the program version.
-const Version = "1.1.1"
+const Version = "1.1.2"
 
 // platform is the per-OS half of the daemon.
 type platform interface {
