@@ -35,17 +35,26 @@ const (
 	SourceOff HotkeySource = "off"
 )
 
+// defaultsVersion is bumped when the built-in hotkey defaults change; Load
+// migrates an old untouched default once and records the version.
+const defaultsVersion = 2
+
 // Config is the whole on-disk configuration.
 type Config struct {
 	Enabled bool `json:"enabled"`
 
-	// Bindings are GTK accelerators such as "<Control><Shift>Pause".
+	// Bindings are GTK accelerators such as "<Control><Shift>F10".
 	Source     HotkeySource `json:"hotkey_source"`
 	HotkeyMain string       `json:"hotkey_main"`
 	HotkeyAlt  string       `json:"hotkey_alt"`
 
 	ActionMain Action `json:"action_main"`
 	ActionAlt  Action `json:"action_alt"`
+
+	// DefaultsVersion records which built-in defaults this config started from.
+	// It lets an upgrade move the old Pause defaults to keys that exist on a 75%
+	// keyboard without touching a consciously chosen combination.
+	DefaultsVersion int `json:"defaults_version"`
 
 	// SwitchLayoutAfter selects the system layout matching the converted text.
 	SwitchLayoutAfter bool `json:"switch_layout_after"`
@@ -77,8 +86,8 @@ func Default() Config {
 	return Config{
 		Enabled:           true,
 		Source:            SourceGNOME,
-		HotkeyMain:        "<Control><Shift>Pause",
-		HotkeyAlt:         "<Shift>Pause",
+		HotkeyMain:        "<Control><Shift>F10",
+		HotkeyAlt:         "<Control><Alt>F10",
 		ActionMain:        ActionSelection,
 		ActionAlt:         ActionWord,
 		SwitchLayoutAfter: true,
@@ -89,6 +98,7 @@ func Default() Config {
 		PasteShortcut:     "ctrl+v",
 		HTTPAddr:          "127.0.0.1:8791",
 		ShowTray:          true,
+		DefaultsVersion:   defaultsVersion,
 	}
 }
 
@@ -157,8 +167,29 @@ func Load() (*Store, error) {
 	if err := json.Unmarshal(data, &s.cfg); err != nil {
 		return s, err
 	}
+	migrated := s.migrateDefaults()
 	s.normalize()
+	if migrated {
+		_ = s.save() // best effort; the next load will retry idempotently
+	}
 	return s, nil
+}
+
+// migrateDefaults moves only the exact old Pause defaults to F10. A user who
+// chose Pause deliberately keeps it, because DefaultsVersion is already 2.
+func (s *Store) migrateDefaults() bool {
+	if s.cfg.DefaultsVersion >= defaultsVersion {
+		return false
+	}
+	d := Default()
+	if s.cfg.HotkeyMain == "" || s.cfg.HotkeyMain == "<Control><Shift>Pause" {
+		s.cfg.HotkeyMain = d.HotkeyMain
+	}
+	if s.cfg.HotkeyAlt == "" || s.cfg.HotkeyAlt == "<Shift>Pause" {
+		s.cfg.HotkeyAlt = d.HotkeyAlt
+	}
+	s.cfg.DefaultsVersion = defaultsVersion
+	return true
 }
 
 func (s *Store) normalize() {
@@ -192,6 +223,9 @@ func (s *Store) normalize() {
 	}
 	if s.cfg.ReleaseDelayMs <= 0 {
 		s.cfg.ReleaseDelayMs = d.ReleaseDelayMs
+	}
+	if s.cfg.DefaultsVersion == 0 {
+		s.cfg.DefaultsVersion = defaultsVersion
 	}
 }
 

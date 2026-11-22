@@ -176,9 +176,9 @@ func (s *Server) saveHotkey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	if !combo.HasModifier() && !combo.IsFunctionKey() {
+	if !combo.IsBindable() {
 		writeJSON(w, map[string]any{"ok": false,
-			"error": "глобальное сочетание должно содержать модификатор (Ctrl, Alt, Super или Shift) либо быть функциональной клавишей"})
+			"error": "глобальное сочетание должно содержать модификатор (Ctrl, Alt, Super или Shift) либо быть функциональной клавишей (F1–F24)"})
 		return
 	}
 	accel, err := combo.Accelerator()

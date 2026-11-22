@@ -17,6 +17,16 @@ var vkByName = map[string]uint16{
 	"space": 0x20, "return": 0x0D, "tab": 0x09, "backspace": 0x08,
 	"escape": 0x1B, "left": 0x25, "right": 0x27, "up": 0x26, "down": 0x28,
 	"capslock": 0x14, "menu": 0x5D, "scrolllock": 0x91,
+
+	"minus": 0xBD, "equal": 0xBB, "bracketleft": 0xDB, "bracketright": 0xDD,
+	"backslash": 0xDC, "semicolon": 0xBA, "apostrophe": 0xDE,
+	"comma": 0xBC, "period": 0xBE, "slash": 0xBF, "grave": 0xC0,
+
+	"numpad0": 0x60, "numpad1": 0x61, "numpad2": 0x62, "numpad3": 0x63,
+	"numpad4": 0x64, "numpad5": 0x65, "numpad6": 0x66, "numpad7": 0x67,
+	"numpad8": 0x68, "numpad9": 0x69, "numpadmultiply": 0x6A,
+	"numpadadd": 0x6B, "numpadseparator": 0x6C, "numpadsubtract": 0x6D,
+	"numpaddecimal": 0x6E, "numpaddivide": 0x6F, "numpadenter": 0x0D,
 }
 
 // ParseBinding turns a stored GTK accelerator into a RegisterHotKey binding.

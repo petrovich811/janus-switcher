@@ -100,7 +100,7 @@
     <div class="row">
       <div class="name"><b>Основная клавиша</b>
         <small>нажмите на поле, чтобы назначить сочетание</small></div>
-      <div class="key" id="keyMain" tabindex="0" role="button">Ctrl+Shift+Pause</div>
+      <div class="key" id="keyMain" tabindex="0" role="button">Ctrl+Shift+F10</div>
       <select id="actionMain">
         <option value="selection">выделенный текст</option>
         <option value="word">последнее слово</option>
@@ -110,7 +110,7 @@
     <div class="row">
       <div class="name"><b>С Shift</b>
         <small>второе сочетание, например Shift+Break — своё действие</small></div>
-      <div class="key" id="keyAlt" tabindex="0" role="button">Shift+Pause</div>
+      <div class="key" id="keyAlt" tabindex="0" role="button">Ctrl+Alt+F10</div>
       <select id="actionAlt">
         <option value="selection">выделенный текст</option>
         <option value="word">последнее слово</option>
@@ -125,9 +125,12 @@
         <option value="off">вручную</option>
       </select>
     </div>
-    <div class="hint">Esc — отменить назначение. GNOME принимает только сочетания с модификатором (Ctrl, Alt, Shift или Super):
-      одна клавиша Pause без модификатора не сработает. Комбинации вида Ctrl+Shift+F9 часто заняты браузером — если клавиша молчит, назначьте другую.
-      Совсем молчит? Запустите <code>janus diag</code>: он покажет, зарегистрировано ли сочетание и держит ли его демон клавиш сессии.</div>
+    <div class="hint">Esc — отменить назначение. По умолчанию <b>Ctrl+Shift+F10</b> и <b>Ctrl+Alt+F10</b>:
+      на 75% клавиатурах Pause, Insert и PrintScreen часто нет. Можно назначить F-клавишу, цифру или
+      пунктуацию с модификатором. GNOME не берёт одиночную клавишу без модификатора (кроме F1–F24).
+      Буквы и знаки проверены и в русской раскладке; если у вас сочетание молчит — F-клавиша
+      надёжнее. Совсем молчит? Запустите <code>janus diag</code>: он покажет, зарегистрировано ли
+      сочетание и держит ли его демон клавиш сессии.</div>
   </section>
 
   <section class="card">
@@ -223,6 +226,21 @@ async function post(path, body){
   return r.json();
 }
 
+const keyLabels = {
+  'Page_Up':'PageUp', 'Page_Down':'PageDown', 'BackSpace':'Backspace',
+  'Print':'PrintScreen', 'PrintScreen':'PrintScreen', 'Pause':'Pause/Break',
+  'space':'Space', 'Return':'Enter', 'Caps_Lock':'CapsLock',
+  'Scroll_Lock':'ScrollLock', 'Menu':'Menu',
+  'minus':'-', 'equal':'=', 'bracketleft':'[', 'bracketright':']',
+  'backslash':'\\', 'semicolon':';', 'apostrophe':"'", 'comma':',',
+  'period':'.', 'slash':'/', 'grave':'`',
+  'KP_0':'Num 0', 'KP_1':'Num 1', 'KP_2':'Num 2', 'KP_3':'Num 3',
+  'KP_4':'Num 4', 'KP_5':'Num 5', 'KP_6':'Num 6', 'KP_7':'Num 7',
+  'KP_8':'Num 8', 'KP_9':'Num 9', 'KP_Add':'Num +', 'KP_Subtract':'Num -',
+  'KP_Multiply':'Num *', 'KP_Divide':'Num /', 'KP_Decimal':'Num .',
+  'KP_Separator':'Num ,', 'KP_Enter':'Num Enter'
+};
+
 function humanize(accel){
   if (!accel) return '—';
   let s = accel;
@@ -230,10 +248,7 @@ function humanize(accel){
   for (const [tag, name] of [['<Control>','Ctrl'],['<Alt>','Alt'],['<Shift>','Shift'],['<Super>','Super']]){
     if (s.includes(tag)) { mods.push(name); s = s.replace(tag, ''); }
   }
-  const key = s.replace('Page_Up','PageUp').replace('Page_Down','PageDown')
-               .replace('BackSpace','Backspace').replace('Print','PrintScreen')
-               .replace('space','Space').replace('Return','Enter');
-  return [...mods, key].join('+');
+  return [...mods, keyLabels[s] || s].join('+');
 }
 
 function keyName(e){
@@ -242,10 +257,19 @@ function keyName(e){
   if (/^Digit[0-9]$/.test(c)) return c.slice(5);
   if (/^Numpad[0-9]$/.test(c)) return 'numpad' + c.slice(6);
   if (/^F([1-9]|1[0-9]|2[0-4])$/.test(c)) return c.toLowerCase();
-  const map = {Pause:'pause', PrintScreen:'print', Insert:'insert', Delete:'delete',
+  const map = {
+    Pause:'pause', PrintScreen:'print', Insert:'insert', Delete:'delete',
     Home:'home', End:'end', PageUp:'pageup', PageDown:'pagedown', Space:'space',
-    Enter:'return', NumpadEnter:'return', Tab:'tab', Backspace:'backspace',
-    Escape:'escape', ArrowLeft:'left', ArrowRight:'right', ArrowUp:'up', ArrowDown:'down'};
+    Enter:'return', NumpadEnter:'numpadenter', Tab:'tab', Backspace:'backspace',
+    Escape:'escape', ArrowLeft:'left', ArrowRight:'right', ArrowUp:'up', ArrowDown:'down',
+    Minus:'minus', Equal:'equal', BracketLeft:'bracketleft', BracketRight:'bracketright',
+    Backslash:'backslash', Semicolon:'semicolon', Quote:'apostrophe',
+    Comma:'comma', Period:'period', Slash:'slash', Backquote:'grave',
+    CapsLock:'capslock', ScrollLock:'scrolllock', ContextMenu:'menu',
+    NumpadAdd:'numpadadd', NumpadSubtract:'numpadsubtract',
+    NumpadMultiply:'numpadmultiply', NumpadDivide:'numpaddivide',
+    NumpadDecimal:'numpaddecimal', NumpadComma:'numpadseparator'
+  };
   return map[c] || null;
 }
 
